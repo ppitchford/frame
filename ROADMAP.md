@@ -31,7 +31,7 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 - Region capture, with crosshair and magnifier during selection
 - Window capture (single-window selection)
 - Fullscreen capture (active output or all outputs)
-- Scrolling capture — see spike below
+- Scrolling capture — **spike passed (GO)**, see below
 - Self-timer (configurable delay)
 
 ### Output
@@ -49,6 +49,8 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 - **Destructive ops:** crop, blur, pixelate
 
 ## Pre-v1 Spike: Scrolling Capture Feasibility
+
+> **Status: PASSED (GO) — 2026-07-15.** The capture-and-stitch loop produces readable, seam-free output on text-heavy content; all four success criteria met. SAD proved adequate — the `rustfft` fallback is **not** needed. Stitch clears the 2 s target (1589 ms on a ~5-viewport stress run). One noted weakness: periodic/low-texture content (e.g. blocks of identical rules) is ambiguous for SAD and can mis-stitch without a reject — degenerate content, deferred. Full write-up in `SPIKE-FINDINGS.md`; throwaway spike code in `src/main.rs`.
 
 Wayland has no compositor primitive for capturing offscreen surface content. The approach is select-area-then-user-scrolls, with frame stitching via the `wlr-screencopy` loop.
 
