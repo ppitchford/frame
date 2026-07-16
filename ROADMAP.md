@@ -4,7 +4,8 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 
 ## Project Principles
 
-- **BYOS (Build Your Own Stuff).** Audience of one. No configurability surface beyond what the author uses. No documentation for users who don't exist. No support for use cases the author hasn't asked for.
+- **BYOS (Build Your Own Stuff).** Audience of one. No configurability surface beyond what the author uses. No support for use cases the author hasn't asked for.
+  - **"Audience of one" is not "no readers."** There are four: the author now, the author later, the Claude session working on this now, and the one working on it later. Documentation that serves those four — decisions, corrections, and the reasoning behind them — is in scope and earns its keep. What's out of scope is documentation for users and contributors who don't exist: getting-started guides, contributor docs, API surface for consumers, support material.
 - **Single static binary.** One executable. No runtime dependencies on system libraries beyond what Void provides by default. GTK is eliminated by this requirement.
 - **Clarity over cleverness.** Minimal, precise implementations preferred over flexible, abstract ones.
 - **Wayland-first.** No X11 compatibility shim, no legacy fallbacks.
@@ -102,6 +103,8 @@ Will not be revisited without an explicit reason.
 
 Settled during the initial planning session. Versions to confirm against latest at implementation time.
 
+**Behavioural claims in this section were written from planning-time assumption, not from running the crates.** The crate choices are locked; what the crates *do* is not established until an implementation has exercised it. Verify against the crate source and against observable end state — not against a returned `Ok`. The clipboard correction below is what one unverified sentence cost when a later session read it as fact.
+
 **Wayland capture:**
 - `wayland-client` + `wayland-protocols-wlr` (raw), targeting `zwlr_screencopy_v1`. Pure-Rust backend, no `libwayland-client.so` runtime dependency.
 - `libwayshot` held as unreserved fallback if the scrolling-capture spike reveals the raw approach was miscalibrated.
@@ -111,4 +114,11 @@ Settled during the initial planning session. Versions to confirm against latest 
 - Raw `wayland-client` + `tiny-skia` for `wlr-layer-shell` surfaces: region-selection overlay, and any Tier 2 layer-shell work (freeze-screen mode, floating screenshots).
 
 **Clipboard:**
-- `wl-clipboard-rs`. Pure-Rust backend (do not enable the `native_lib` feature). Handles both interactive-overlay and headless-CLI copy contexts through the same code path; forks a background helper to serve paste requests after the process exits when required.
+
+> **Correction — 2026-07-16.** This section previously asserted that `wl-clipboard-rs` "forks a background helper to serve paste requests after the process exits when required." It does not, and never did. The claim was recorded at planning time without running the crate, and was then read as settled fact during task 6: `src/output.rs` was written to it, and shipped a `frame region` that printed `copied to clipboard` while leaving the clipboard empty. It cost a debugging round, and the false confirmations are worth remembering — `copy()` returned `Ok`, the PNG was on disk, and neither was evidence of anything. The only real test was whether the offer outlived the process. Corrected behaviour below.
+
+- `wl-clipboard-rs`. Pure-Rust backend (do not enable the `native_lib` feature). Handles both interactive-overlay and headless-CLI copy contexts through the same code path.
+- **A Wayland clipboard offer is served live by the client that makes it**, so it dies with that process. `wl-clipboard-rs` serves it from a thread inside the calling process (see `Options::foreground` in the crate's `copy.rs`) — there is no forked helper. An `Ok` from `copy()` means the offer was registered, not that it will outlive you.
+- **`frame` re-execs itself** as a detached `__serve-clipboard` child, which reads the PNG from stdin, claims the offer, and serves until another client takes the clipboard. The child reports success over a pipe before it starts serving, so a genuine failure still reaches the parent's exit code.
+- **Re-exec rather than `fork()`:** the Quick Access Overlay copies from an `eframe` (winit/wgpu) process, and `fork()` carries only the calling thread into the child — a mutex held by any other thread at that instant, the allocator's included, stays locked forever in a child that then allocates in its serve loop. `exec` resets the address space, so one code path stays safe from both the single-threaded CLI and the multithreaded overlay.
+- **Verified 2026-07-16:** `frame region` → drag → release leaves a PNG on disk and a byte-identical `image/png` on the clipboard, served by a child reparented to `PPID 1` that outlives the capture.

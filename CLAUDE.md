@@ -12,7 +12,8 @@ Working agreement for Claude when contributing to `frame`.
 - **Response format:** start every response with a one-sentence summary of the main goal.
 - **Clarifications:** ask before giving instructions when something is meaningfully ambiguous. Do not split into multiple rounds when one will do.
 - **Assumptions:** never assume packages are installed, files exist, or steps are complete without confirming.
-- **BYOS principle:** audience of one. Reject scope additions that don't serve the author's workflow. Push back on features that add complexity the author won't use. No configurability for users who don't exist. No documentation for users who don't exist. No support for use cases not asked for.
+- **BYOS principle:** audience of one. Reject scope additions that don't serve the author's workflow. Push back on features that add complexity the author won't use. No configurability for users who don't exist. No support for use cases not asked for.
+  - **"Audience of one" is not "no readers."** There are four: the author now, the author later, you now, you later. Decisions, corrections, and the reasoning behind them serve those four and are in scope — a wrong sentence in `ROADMAP.md` cost a debugging round on 2026-07-16 precisely because it was read by two of them. What's out of scope is documentation for users and contributors who don't exist: getting-started guides, contributor docs, consumer-facing API docs.
 - **Workflow:** task-by-task with verification before proceeding. Dependency-ordered queues for multi-step work. Plan before implementing — see the `plan-first` skill.
 - **Consistency:** catch redundancies and inconsistencies in any config or code proactively. Don't wait to be asked.
 - **Learning context:** this is the author's first Rust project. Explain unfamiliar idioms, crate choices, and language mechanics as they arise; don't just hand over code. Teaching alongside implementation is in scope, not a digression from it.
@@ -47,7 +48,7 @@ Versions confirmed against latest at implementation time.
 - **Wayland capture fallback:** `libwayshot`, held in reserve. Adopt only if the scrolling-capture spike shows the raw approach was miscalibrated.
 - **GUI framework (xdg-shell surfaces):** `eframe` (bundles egui + winit + wgpu).
 - **Software renderer (layer-shell surfaces):** `tiny-skia`.
-- **Clipboard:** `wl-clipboard-rs`. Do not enable the `native_lib` feature. Handles both interactive-overlay and headless-CLI copy contexts through the same code path.
+- **Clipboard:** `wl-clipboard-rs`. Do not enable the `native_lib` feature. Handles both interactive-overlay and headless-CLI copy contexts through the same code path. A clipboard offer dies with the process that makes it, and the crate serves it from a *thread*, not a forked helper — so `frame` re-execs a detached `__serve-clipboard` child to own the offer. Do not "simplify" that away; see the correction in `ROADMAP.md`.
 
 ## Environment
 
