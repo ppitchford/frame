@@ -2,7 +2,7 @@
 
 **Verdict: GO.** The `wlr-screencopy` capture loop plus SAD frame-stitching produces readable, seam-free output on text-heavy scrolling content and meets every success criterion. SAD is more than adequate; the `rustfft` phase-correlation fallback is **not** warranted.
 
-Spike code lives in `src/main.rs` (throwaway). Artifacts written to `/tmp/frame-spike/`.
+Spike code was throwaway: written into `src/main.rs`, preserved in `a6762c1`, and retired from the tree by `bf0c4e4`. Do not look for it in `src/main.rs`. Artifacts were written to `/tmp/frame-spike/`.
 
 ## Test conditions
 

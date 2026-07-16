@@ -45,7 +45,7 @@ Authoritative source: `ROADMAP.md`. Repeated here so a fresh session can be prod
 Versions confirmed against latest at implementation time.
 
 - **Wayland capture:** `wayland-client` + `wayland-protocols-wlr` (raw), targeting `zwlr_screencopy_v1`. Pure-Rust backend — do not enable `native_lib` or `client_system` features.
-- **Wayland capture fallback:** `libwayshot`, held in reserve. Adopt only if the scrolling-capture spike shows the raw approach was miscalibrated.
+- **Wayland capture fallback:** `libwayshot` — retired 2026-07-16. It was contingent on the spike showing the raw approach miscalibrated; the spike passed and region capture shipped on the raw stack. Closed decision, not a live option.
 - **GUI framework (xdg-shell surfaces):** `eframe` (bundles egui + winit + wgpu).
 - **Software renderer (layer-shell surfaces):** `tiny-skia`.
 - **Clipboard:** `wl-clipboard-rs`. Do not enable the `native_lib` feature. Handles both interactive-overlay and headless-CLI copy contexts through the same code path. A clipboard offer dies with the process that makes it, and the crate serves it from a *thread*, not a forked helper — so `frame` re-execs a detached `__serve-clipboard` child to own the offer. Do not "simplify" that away; see the correction in `ROADMAP.md`.

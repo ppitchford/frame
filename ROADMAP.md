@@ -29,7 +29,7 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 ## Tier 1 — v1 Ship Target
 
 ### Capture
-- Region capture, with crosshair and magnifier during selection
+- Region capture, with crosshair and magnifier during selection — **shipped 2026-07-16** (`bf0c4e4`, `216684c`). `frame region`: frozen-grab backdrop, dim, `+` cursor marker, drag rectangle, magnifier loupe; crops to PNG + clipboard. Esc and sub-8px selections cancel with no output.
 - Window capture (single-window selection)
 - Fullscreen capture (active output or all outputs)
 - Scrolling capture — **spike passed (GO)**, see below
@@ -51,7 +51,7 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 
 ## Pre-v1 Spike: Scrolling Capture Feasibility
 
-> **Status: PASSED (GO) — 2026-07-15.** The capture-and-stitch loop produces readable, seam-free output on text-heavy content; all four success criteria met. SAD proved adequate — the `rustfft` fallback is **not** needed. Stitch clears the 2 s target (1589 ms on a ~5-viewport stress run). One noted weakness: periodic/low-texture content (e.g. blocks of identical rules) is ambiguous for SAD and can mis-stitch without a reject — degenerate content, deferred. Full write-up in `SPIKE-FINDINGS.md`; throwaway spike code in `src/main.rs`.
+> **Status: PASSED (GO) — 2026-07-15.** The capture-and-stitch loop produces readable, seam-free output on text-heavy content; all four success criteria met. SAD proved adequate — the `rustfft` fallback is **not** needed. Stitch clears the 2 s target (1589 ms on a ~5-viewport stress run). One noted weakness: periodic/low-texture content (e.g. blocks of identical rules) is ambiguous for SAD and can mis-stitch without a reject — degenerate content, deferred. Full write-up in `SPIKE-FINDINGS.md`. The throwaway spike code lives in `a6762c1` and was retired from the tree by `bf0c4e4` — it is *not* in `src/main.rs`.
 
 Wayland has no compositor primitive for capturing offscreen surface content. The approach is select-area-then-user-scrolls, with frame stitching via the `wlr-screencopy` loop.
 
@@ -107,7 +107,7 @@ Settled during the initial planning session. Versions to confirm against latest 
 
 **Wayland capture:**
 - `wayland-client` + `wayland-protocols-wlr` (raw), targeting `zwlr_screencopy_v1`. Pure-Rust backend, no `libwayland-client.so` runtime dependency.
-- `libwayshot` held as unreserved fallback if the scrolling-capture spike reveals the raw approach was miscalibrated.
+- `libwayshot` — **fallback retired 2026-07-16.** It was contingent on the spike revealing the raw approach was miscalibrated. The spike passed (GO), and region capture then shipped on the raw stack, so the condition can no longer fire. Recorded as a closed decision, not a live option.
 
 **GUI framework:**
 - `eframe` (egui + winit + wgpu) for xdg-shell surfaces: annotation editor, Quick Access Overlay.
