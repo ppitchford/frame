@@ -32,6 +32,16 @@ const MAG_ZOOM: i32 = 8; // magnification factor
 const MAG_SIDE: i32 = MAG_SRC * MAG_ZOOM; // on-screen loupe size
 const MAG_OFFSET: i32 = 32; // gap between cursor and loupe
 
+// Crosshair marker geometry (physical pixels).
+const CROSS_ARM: f32 = 16.0; // arm length from the centre
+const CROSS_THICK: f32 = 2.0;
+
+/// Smallest selection worth capturing, per side, in physical pixels. A bare
+/// click yields 0×0, which would otherwise reach the PNG encoder; a twitch
+/// during a click yields a few pixels of noise. Well below any deliberate
+/// selection — a single character is ~20 physical pixels wide at scale 2.
+const MIN_SELECTION: u32 = 8;
+
 /// A selected rectangle in physical pixels, ready to crop from the grab.
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {
@@ -39,6 +49,13 @@ pub struct Rect {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+impl Rect {
+    /// Whether this is a real selection rather than a stray click.
+    fn is_usable(&self) -> bool {
+        self.width >= MIN_SELECTION && self.height >= MIN_SELECTION
+    }
 }
 
 struct Overlay {
@@ -77,7 +94,6 @@ impl Overlay {
         if self.mmap.is_none() || self.surface.is_none() || self.buffer.is_none() {
             return;
         }
-        let (w, h) = (self.phys_w as f32, self.phys_h as f32);
         let s = self.scale as f32;
         let ident = Transform::identity();
 
@@ -90,15 +106,25 @@ impl Overlay {
             draw_border(&mut self.canvas, sel);
         }
 
-        // Crosshair through the cursor (physical pixels).
+        // A `+` marker centred on the cursor (physical pixels).
         let (cx, cy) = (self.pointer_pos.0 as f32 * s, self.pointer_pos.1 as f32 * s);
-        let t = 2.0;
         let mut cross = Paint::default();
         cross.set_color_rgba8(255, 255, 255, 180);
-        if let Some(r) = tiny_skia::Rect::from_xywh(0.0, cy - t / 2.0, w, t) {
-            self.canvas.fill_rect(r, &cross, ident, None);
-        }
-        if let Some(r) = tiny_skia::Rect::from_xywh(cx - t / 2.0, 0.0, t, h) {
+        let arms = [
+            tiny_skia::Rect::from_xywh(
+                cx - CROSS_ARM,
+                cy - CROSS_THICK / 2.0,
+                CROSS_ARM * 2.0,
+                CROSS_THICK,
+            ),
+            tiny_skia::Rect::from_xywh(
+                cx - CROSS_THICK / 2.0,
+                cy - CROSS_ARM,
+                CROSS_THICK,
+                CROSS_ARM * 2.0,
+            ),
+        ];
+        for r in arms.into_iter().flatten() {
             self.canvas.fill_rect(r, &cross, ident, None);
         }
 
@@ -243,7 +269,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Overlay {
                     state.dirty = true;
                 }
                 wl_pointer::ButtonState::Released => {
-                    state.selection = state.drag_rect();
+                    // Degenerate drags cancel: `None` here means no file and no
+                    // clipboard, same as Escape.
+                    state.selection = state.drag_rect().filter(Rect::is_usable);
                     state.anchor = None;
                     state.running = false;
                 }
