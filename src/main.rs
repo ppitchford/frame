@@ -3,6 +3,7 @@
 mod capture;
 mod output;
 mod overlay;
+mod qao;
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
@@ -16,7 +17,8 @@ fn main() {
 }
 
 /// Interactive region capture: grab the output, select a region over the frozen
-/// grab, crop it, and save + copy.
+/// grab, crop it, and hand it to the Quick Access Overlay. Saving and copying are
+/// the overlay's buttons — this command writes nothing on its own.
 fn region_capture() {
     let (grab, scale) = capture::capture_full_output().unwrap_or_else(|e| {
         eprintln!("capture failed: {e}");
@@ -31,16 +33,8 @@ fn region_capture() {
     let cropped =
         image::imageops::crop_imm(&grab, rect.x, rect.y, rect.width, rect.height).to_image();
 
-    match output::save_and_copy(&cropped) {
-        Ok(path) => println!(
-            "saved {} ({}x{}) and copied to clipboard",
-            path.display(),
-            cropped.width(),
-            cropped.height()
-        ),
-        Err(e) => {
-            eprintln!("output failed: {e}");
-            std::process::exit(1);
-        }
+    if let Err(e) = qao::show(cropped, scale) {
+        eprintln!("overlay failed: {e}");
+        std::process::exit(1);
     }
 }

@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Defaults would pull `x11` (against the Wayland-first rule) and `web_screen_reader`
+# (native-only binary), so features are named explicitly. `persistence` is not a
+# default and stays off: `frame` writes no window-state files.
+eframe = { version = "0.35.0", default-features = false, features = [
+    "default_fonts",
+    "wayland",
+    "wgpu",
+] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 jiff = "0.2.32"
 memmap2 = "0.9.11"

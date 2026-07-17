@@ -16,9 +16,9 @@ pub const SERVE_ARG: &str = "__serve-clipboard";
 const STATUS_OK: u8 = 0;
 const STATUS_ERR: u8 = 1;
 
-/// Encode `img` to PNG, save it under the pictures directory, and copy it to
-/// the clipboard. Returns the path written.
-pub fn save_and_copy(img: &RgbaImage) -> Result<PathBuf, String> {
+/// Encode `img` to PNG and write it under the pictures directory. Returns the
+/// path written.
+pub fn save(img: &RgbaImage) -> Result<PathBuf, String> {
     let png = encode_png(img)?;
 
     let path = output_path();
@@ -27,8 +27,13 @@ pub fn save_and_copy(img: &RgbaImage) -> Result<PathBuf, String> {
     }
     std::fs::write(&path, &png).map_err(|e| format!("write PNG failed: {e}"))?;
 
-    copy_to_clipboard(png)?;
     Ok(path)
+}
+
+/// Encode `img` to PNG and put it on the clipboard.
+pub fn copy(img: &RgbaImage) -> Result<(), String> {
+    let png = encode_png(img)?;
+    copy_to_clipboard(png)
 }
 
 fn encode_png(img: &RgbaImage) -> Result<Vec<u8>, String> {
