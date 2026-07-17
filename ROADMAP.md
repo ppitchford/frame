@@ -31,7 +31,10 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 ### Capture
 - Region capture, with crosshair and magnifier during selection — **shipped 2026-07-16** (`bf0c4e4`, `216684c`). `frame region`: frozen-grab backdrop, dim, `+` cursor marker, drag rectangle, magnifier loupe; crops to PNG + clipboard. Esc and sub-8px selections cancel with no output.
 - Window capture (single-window selection)
-- Fullscreen capture (active output or all outputs)
+- Fullscreen capture (active output or all outputs) — **next up.** Groundwork verified 2026-07-16, so a fresh session need not re-derive it:
+  - **Most of it already exists.** `capture::capture_full_output()` grabs the whole output and returns it with the output's integer scale; it is what paints the region overlay's frozen backdrop today. The remaining work is a `frame full` subcommand handing that grab to the Quick Access Overlay, which already takes `(RgbaImage, scale)`. Expect it to be small — resist the urge to rebuild the capture path.
+  - **"All outputs" is out of scope until a second output exists.** This machine has exactly one (`eDP-1`, 1440×960 logical, scale 2), so "active output" and "all outputs" are the same image. Multi-output compositing would be speculation against hardware that isn't here — BYOS. Revisit if the Framework is ever docked.
+  - **`capture.rs` binds the first `wl_output` advertised and ignores the rest** (`if state.output.is_none()`, line 64). Correct on a single display, silently wrong the day there are two — it would grab whichever output the compositor happens to advertise first, not the active one. Latent assumption, not a bug today; it is the thing that breaks first if "active output" ever has to mean something.
 - Scrolling capture — **spike passed (GO)**, see below
 - Self-timer (configurable delay)
 
