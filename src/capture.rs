@@ -25,14 +25,23 @@ struct BufferSpec {
     stride: u32,
 }
 
+/// One output the compositor advertised: its proxy, connector name (from the
+/// v4 `name` event), and scale. We bind every output and choose among them,
+/// rather than grabbing whichever the compositor happens to list first.
+struct OutputInfo {
+    registry_name: u32, // wl_registry global id, used to route events back here
+    proxy: wl_output::WlOutput,
+    name: Option<String>, // connector name, e.g. "eDP-1"
+    scale: i32,
+}
+
 /// Globals plus per-capture scratch state. The event queue dispatches every
 /// proxy's events into this one struct.
 #[derive(Default)]
 struct CaptureApp {
     shm: Option<wl_shm::WlShm>,
-    output: Option<wl_output::WlOutput>,
+    outputs: Vec<OutputInfo>,
     screencopy: Option<ZwlrScreencopyManagerV1>,
-    scale: i32,
 
     pending_buffer: Option<BufferSpec>,
     buffer_done: bool,
@@ -61,10 +70,16 @@ impl Dispatch<wl_registry::WlRegistry, ()> for CaptureApp {
                     state.shm = Some(registry.bind(name, version.min(1), qh, ()));
                 }
                 "wl_output" => {
-                    if state.output.is_none() {
-                        // v2+ for the `scale` event.
-                        state.output = Some(registry.bind(name, version.min(4), qh, ()));
-                    }
+                    // v4 for the `name` event; bind every output and pick later.
+                    // The registry id travels as user-data so this output's own
+                    // events route back to its entry.
+                    let proxy = registry.bind(name, version.min(4), qh, name);
+                    state.outputs.push(OutputInfo {
+                        registry_name: name,
+                        proxy,
+                        name: None,
+                        scale: 1,
+                    });
                 }
                 "zwlr_screencopy_manager_v1" => {
                     state.screencopy = Some(registry.bind(name, version.min(3), qh, ()));
@@ -75,19 +90,30 @@ impl Dispatch<wl_registry::WlRegistry, ()> for CaptureApp {
     }
 }
 
-// We care about one wl_output event: the integer scale factor, needed later to
-// map logical pointer coordinates onto this physical-pixel grab.
-impl Dispatch<wl_output::WlOutput, ()> for CaptureApp {
+// Each output reports its connector name and scale shortly after bind. We route
+// those to the right `OutputInfo` by the registry id carried as user-data. The
+// name selects the grab target; the scale maps logical coordinates onto this
+// physical-pixel grab later.
+impl Dispatch<wl_output::WlOutput, u32> for CaptureApp {
     fn event(
         state: &mut Self,
         _: &wl_output::WlOutput,
         event: wl_output::Event,
-        _: &(),
+        registry_name: &u32,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_output::Event::Scale { factor } = event {
-            state.scale = factor;
+        let Some(info) = state
+            .outputs
+            .iter_mut()
+            .find(|o| o.registry_name == *registry_name)
+        else {
+            return;
+        };
+        match event {
+            wl_output::Event::Scale { factor } => info.scale = factor,
+            wl_output::Event::Name { name } => info.name = Some(name),
+            _ => {}
         }
     }
 }
@@ -140,21 +166,20 @@ delegate_noop!(CaptureApp: ignore ZwlrScreencopyManagerV1);
 delegate_noop!(CaptureApp: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(CaptureApp: ignore wl_buffer::WlBuffer);
 
-/// Grab the entire output into an RGBA image. Returns the grab and the output's
-/// integer scale factor. Self-contained: opens and closes its own Wayland
-/// connection.
-pub fn capture_full_output() -> Result<(RgbaImage, i32), String> {
+/// Grab a full output into an RGBA image. `target` is a connector name (e.g.
+/// `"eDP-1"`); the matching output is grabbed, falling back to the first the
+/// compositor advertised when `target` is `None` or unmatched. Returns the grab
+/// and that output's integer scale factor. Self-contained: opens and closes its
+/// own Wayland connection.
+pub fn capture_output(target: Option<&str>) -> Result<(RgbaImage, i32), String> {
     let conn = Connection::connect_to_env().map_err(|e| format!("Wayland connect failed: {e}"))?;
     let mut queue = conn.new_event_queue();
     let qh = queue.handle();
     conn.display().get_registry(&qh, ());
 
-    let mut app = CaptureApp {
-        scale: 1,
-        ..Default::default()
-    };
-    // Two roundtrips: the first surfaces the globals, the second lets wl_output
-    // deliver its `scale` event after we've bound it.
+    let mut app = CaptureApp::default();
+    // Two roundtrips: the first surfaces the globals (binding every output), the
+    // second lets each wl_output deliver its `name` and `scale` events.
     queue.roundtrip(&mut app).map_err(|e| e.to_string())?;
     queue.roundtrip(&mut app).map_err(|e| e.to_string())?;
 
@@ -162,7 +187,12 @@ pub fn capture_full_output() -> Result<(RgbaImage, i32), String> {
         .screencopy
         .clone()
         .ok_or("compositor does not advertise zwlr_screencopy_manager_v1")?;
-    let output = app.output.clone().ok_or("no wl_output")?;
+    // Copy proxy and scale out of the chosen entry so the immutable borrow ends
+    // before the mutable dispatch loop below.
+    let (output, scale) = {
+        let chosen = select_output(&app.outputs, target)?;
+        (chosen.proxy.clone(), chosen.scale)
+    };
 
     let frame = manager.capture_output(0, &output, &qh, ());
 
@@ -206,7 +236,27 @@ pub fn capture_full_output() -> Result<(RgbaImage, i32), String> {
     frame.destroy();
     conn.flush().ok();
 
-    Ok((img, app.scale))
+    Ok((img, scale))
+}
+
+/// Choose which output to grab: the one whose connector name matches `target`,
+/// else the first the compositor advertised. A missing target or an unknown
+/// name both fall back rather than fail — single-display capture never hinges
+/// on the name matching.
+fn select_output<'a>(
+    outputs: &'a [OutputInfo],
+    target: Option<&str>,
+) -> Result<&'a OutputInfo, String> {
+    if outputs.is_empty() {
+        return Err("compositor advertised no wl_output".into());
+    }
+    if let Some(t) = target {
+        if let Some(found) = outputs.iter().find(|o| o.name.as_deref() == Some(t)) {
+            return Ok(found);
+        }
+        eprintln!("frame: no output named {t:?}; using the first output");
+    }
+    Ok(&outputs[0])
 }
 
 /// Convert the shm buffer to an `RgbaImage`. wlr-screencopy hands us

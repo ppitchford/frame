@@ -10,8 +10,8 @@ use memmap2::MmapMut;
 use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
 use tiny_skia::{Paint, Pixmap, Transform};
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm,
-    wl_shm_pool, wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat,
+    wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::{
@@ -58,12 +58,21 @@ impl Rect {
     }
 }
 
+/// One output the compositor advertised, tracked so the overlay can request its
+/// layer surface on a specific one instead of letting the compositor pick.
+struct OutputBinding {
+    registry_name: u32, // wl_registry global id, used to route the name event back
+    proxy: wl_output::WlOutput,
+    name: Option<String>, // connector name, e.g. "eDP-1"
+}
+
 struct Overlay {
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
+    outputs: Vec<OutputBinding>,
 
     scale: i32,
     phys_w: u32,
@@ -201,6 +210,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Overlay {
                 "wl_seat" => {
                     let _: wl_seat::WlSeat = registry.bind(name, version.min(5), qh, ());
                 }
+                "wl_output" => {
+                    // v4 for the `name` event; bind every output and match later.
+                    let proxy = registry.bind(name, version.min(4), qh, name);
+                    state.outputs.push(OutputBinding {
+                        registry_name: name,
+                        proxy,
+                        name: None,
+                    });
+                }
                 "zwlr_layer_shell_v1" => {
                     state.layer_shell = Some(registry.bind(name, version.min(1), qh, ()));
                 }
@@ -229,6 +247,30 @@ impl Dispatch<wl_seat::WlSeat, ()> for Overlay {
             }
             if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
                 state.pointer = Some(seat.get_pointer(qh, ()));
+            }
+        }
+    }
+}
+
+// Each output reports its connector name shortly after bind; route it to the
+// right entry by the registry id carried as user-data. Scale is not needed here
+// — it arrives as a parameter from capture — so every other event is ignored.
+impl Dispatch<wl_output::WlOutput, u32> for Overlay {
+    fn event(
+        state: &mut Self,
+        _: &wl_output::WlOutput,
+        event: wl_output::Event,
+        registry_name: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event {
+            if let Some(info) = state
+                .outputs
+                .iter_mut()
+                .find(|o| o.registry_name == *registry_name)
+            {
+                info.name = Some(name);
             }
         }
     }
@@ -473,10 +515,11 @@ fn draw_magnifier(canvas: &mut Pixmap, base: &Pixmap, cx: i32, cy: i32, pw: i32,
     );
 }
 
-/// Show the selection overlay over `grab`. Returns the selected rectangle, or
-/// `None` if cancelled. (Task 2: displays the backdrop and exits on Escape;
-/// selection input is wired up in later tasks.)
-pub fn select_region(grab: &RgbaImage, scale: i32) -> Option<Rect> {
+/// Show the selection overlay over `grab`, on the output named `target` (its
+/// connector name, e.g. `"eDP-1"`). Returns the selected rectangle, or `None` if
+/// cancelled. When `target` is `None` or names no bound output, the compositor
+/// picks the output — the single-display default.
+pub fn select_region(grab: &RgbaImage, scale: i32, target: Option<&str>) -> Option<Rect> {
     let conn = Connection::connect_to_env().expect("Wayland connect failed");
     let mut queue = conn.new_event_queue();
     let qh = queue.handle();
@@ -491,6 +534,7 @@ pub fn select_region(grab: &RgbaImage, scale: i32) -> Option<Rect> {
         layer_shell: None,
         keyboard: None,
         pointer: None,
+        outputs: Vec::new(),
         scale,
         phys_w,
         phys_h,
@@ -508,11 +552,21 @@ pub fn select_region(grab: &RgbaImage, scale: i32) -> Option<Rect> {
         frame_pending: false,
         running: true,
     };
+    // Two roundtrips: the first surfaces the globals (binding every output), the
+    // second lets each wl_output deliver its `name` event so we can match target.
     queue.roundtrip(&mut ov).expect("registry roundtrip");
+    queue.roundtrip(&mut ov).expect("output name roundtrip");
 
     let compositor = ov.compositor.clone().expect("no wl_compositor");
     let shm = ov.shm.clone().expect("no wl_shm");
     let layer_shell = ov.layer_shell.clone().expect("no zwlr_layer_shell_v1");
+
+    // The output to place the overlay on: the one matching `target`, else `None`
+    // so the compositor picks (the single-display default). Grabbing this on the
+    // same output name that capture used keeps backdrop and surface in step.
+    let target_output = target
+        .and_then(|t| ov.outputs.iter().find(|o| o.name.as_deref() == Some(t)))
+        .map(|o| o.proxy.clone());
 
     // Allocate the shm buffer at physical resolution.
     let size = (phys_w * phys_h * 4) as usize;
@@ -536,7 +590,7 @@ pub fn select_region(grab: &RgbaImage, scale: i32) -> Option<Rect> {
     let surface = compositor.create_surface(&qh, ());
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
-        None, // let the compositor pick the output
+        target_output.as_ref(), // the matched output, or None → compositor picks
         Layer::Overlay,
         "frame-region".to_string(),
         &qh,

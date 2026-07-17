@@ -26,6 +26,7 @@ const MIN_WINDOW_W: f32 = 340.0;
 pub fn show(img: RgbaImage, scale: i32) -> Result<(), String> {
     let preview = preview_size(&img, scale);
     let window = egui::vec2(preview.x.max(MIN_WINDOW_W), preview.y + ACTION_BAR_H);
+    let texture_src = downscale_for_texture(&img, preview, scale);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -37,9 +38,29 @@ pub fn show(img: RgbaImage, scale: i32) -> Result<(), String> {
     eframe::run_native(
         "frame",
         options,
-        Box::new(move |cc| Ok(Box::new(Qao::new(cc, img, preview)))),
+        Box::new(move |cc| Ok(Box::new(Qao::new(cc, img, texture_src, preview)))),
     )
     .map_err(|e| format!("overlay failed: {e}"))
+}
+
+/// The preview is drawn at `preview` logical points, so the texture behind it
+/// never needs to exceed the preview's physical size — and a full-resolution
+/// grab (2880×1920 fullscreen) overruns the GPU's maximum texture side. Resize a
+/// copy down to `preview × scale` for the texture, leaving the full-resolution
+/// grab untouched for save and copy. Region grabs already fit, so this returns
+/// them unchanged.
+fn downscale_for_texture(img: &RgbaImage, preview: egui::Vec2, scale: i32) -> RgbaImage {
+    let s = scale.max(1) as f32;
+    let (tw, th) = ((preview.x * s).round() as u32, (preview.y * s).round() as u32);
+    if tw >= img.width() && th >= img.height() {
+        return img.clone();
+    }
+    image::imageops::resize(
+        img,
+        tw.max(1),
+        th.max(1),
+        image::imageops::FilterType::Triangle,
+    )
 }
 
 /// The grab is in physical pixels; egui lays out in logical points, and the
@@ -65,12 +86,18 @@ struct Qao {
 }
 
 impl Qao {
-    fn new(cc: &eframe::CreationContext<'_>, img: RgbaImage, preview: egui::Vec2) -> Self {
-        // `from_rgba_unmultiplied` asserts the buffer matches the stated size, so
-        // the dimensions must come from the image itself.
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        img: RgbaImage,
+        texture_src: RgbaImage,
+        preview: egui::Vec2,
+    ) -> Self {
+        // The texture is the (possibly downscaled) preview source; `img` stays
+        // full-resolution for save and copy. `from_rgba_unmultiplied` asserts the
+        // buffer matches the stated size, so the dimensions come from that image.
         let color = egui::ColorImage::from_rgba_unmultiplied(
-            [img.width() as usize, img.height() as usize],
-            img.as_raw(),
+            [texture_src.width() as usize, texture_src.height() as usize],
+            texture_src.as_raw(),
         );
         let texture = cc
             .egui_ctx
