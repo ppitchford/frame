@@ -50,6 +50,17 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 - **Drawing tools:** arrow, line, rectangle (with fill toggle), ellipse (with fill toggle), freehand pencil with auto-smoothing, highlighter, text (predefined style set)
 - **Destructive ops:** crop, blur, pixelate
 
+### Cutover — deliberately last
+
+**Deferred 2026-07-16**, to be done once the rest of Tier 1 is complete. The old flow stays intact until `frame` actually covers it; nothing here is a preference call to be re-litigated each session.
+
+- Repoint both `~/.config/mango/config.conf` bindings (lines 205–206) from `~/.local/bin/screenshot` to `frame`. Like the windowrule, they live **outside this repo**:
+  - `SUPER,Print` → `screenshot region` → `grim -g "$(slurp)" - | satty --filename -`
+  - `SUPER+SHIFT,Print` → `screenshot full` → `grim - | satty --filename -`
+- **Blocked on fullscreen capture, not just on preference.** The script covers `region` *and* `full`; `frame` has no `full` yet. Repointing only `SUPER,Print` would split the workflow across two tools and leave `satty` in the loop for half of it.
+- The old flow goes capture → *straight* into the editor, with no preview step. The Quick Access Overlay inserts one. Whether that earns its place is a question for the cutover, once there is something behind the Annotate button.
+- Retire `~/.local/bin/screenshot` only after both bindings are moved and the flow has survived real use.
+
 ## Pre-v1 Spike: Scrolling Capture Feasibility
 
 > **Status: PASSED (GO) — 2026-07-15.** The capture-and-stitch loop produces readable, seam-free output on text-heavy content; all four success criteria met. SAD proved adequate — the `rustfft` fallback is **not** needed. Stitch clears the 2 s target (1589 ms on a ~5-viewport stress run). One noted weakness: periodic/low-texture content (e.g. blocks of identical rules) is ambiguous for SAD and can mis-stitch without a reject — degenerate content, deferred. Full write-up in `SPIKE-FINDINGS.md`. The throwaway spike code lives in `a6762c1` and was retired from the tree by `bf0c4e4` — it is *not* in `src/main.rs`.
