@@ -15,23 +15,28 @@ use std::process::Command;
 /// every display once docked and so cannot single one out. The focused client's
 /// monitor is unambiguous.
 pub fn active_output_name() -> Option<String> {
-    let output = Command::new("mmsg")
-        .args(["get", "focusing-client"])
-        .output()
-        // `.ok()?` turns the io::Result into an Option, returning `None` here if
-        // mmsg is missing or fails to spawn.
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    // Parse the one JSON line mmsg prints. `Value` is serde_json's untyped tree:
-    // enough for pulling a single field without defining a struct.
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let json = query(&["get", "focusing-client"])?;
     let name = json.get("monitor")?.as_str()?;
     if name.is_empty() {
         None
     } else {
         Some(name.to_owned())
     }
+}
+
+/// Run one `mmsg` query and parse the single JSON line it prints. `None` on any
+/// failure — mmsg missing, non-zero exit, or unparseable output — so callers
+/// degrade rather than abort.
+///
+/// `Value` is serde_json's untyped tree: enough for pulling a few fields out of
+/// mmsg's replies without mirroring its schema in structs that would then have
+/// to track it.
+pub fn query(args: &[&str]) -> Option<serde_json::Value> {
+    // `.ok()?` turns the io::Result into an Option, returning `None` here if
+    // mmsg is missing or fails to spawn.
+    let output = Command::new("mmsg").args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
 }

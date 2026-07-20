@@ -52,10 +52,28 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// Whether this is a real selection rather than a stray click.
-    fn is_usable(&self) -> bool {
+    /// Whether this rectangle is worth capturing: a real selection rather than a
+    /// stray click, or a window with enough of itself on screen to be useful.
+    pub fn is_usable(&self) -> bool {
         self.width >= MIN_SELECTION && self.height >= MIN_SELECTION
     }
+}
+
+/// What the overlay is asking the user for.
+///
+/// The two modes share the layer surface, the frozen backdrop, the render pacing
+/// and the exit paths; they differ only in what is drawn and what a left release
+/// means. Hence one `Overlay` with a branch rather than two near-identical
+/// event-loop implementations.
+enum Mode {
+    /// Drag out a rectangle freehand. Crosshair and magnifier included, because
+    /// the exact pixel matters.
+    Region,
+    /// Pick one of a fixed set of window rectangles, ordered topmost-first so the
+    /// hit-test resolves overlaps the way the screen looks. No crosshair and no
+    /// magnifier: the rectangles are given, so there is no pixel to aim at — only
+    /// a window to be over.
+    Window(Vec<Rect>),
 }
 
 /// One output the compositor advertised, tracked so the overlay can request its
@@ -74,6 +92,7 @@ struct Overlay {
     pointer: Option<wl_pointer::WlPointer>,
     outputs: Vec<OutputBinding>,
 
+    mode: Mode,
     scale: i32,
     phys_w: u32,
     phys_h: u32,
@@ -109,43 +128,53 @@ impl Overlay {
         // Fresh canvas from the pre-dimmed backdrop (no per-frame alpha blend).
         self.canvas.data_mut().copy_from_slice(self.dimmed.data());
 
-        // Restore original brightness inside the selection and outline it.
-        if let Some(sel) = self.drag_rect() {
+        // Restore original brightness inside the highlighted rectangle and
+        // outline it. Which rectangle that is, is the modes' one shared question:
+        // the drag in progress, or the window under the cursor.
+        let highlight = match self.mode {
+            Mode::Region => self.drag_rect(),
+            Mode::Window(_) => self.hovered_rect(),
+        };
+        if let Some(sel) = highlight {
             restore_rect(&mut self.canvas, &self.base, sel);
             draw_border(&mut self.canvas, sel);
         }
 
-        // A `+` marker centred on the cursor (physical pixels).
-        let (cx, cy) = (self.pointer_pos.0 as f32 * s, self.pointer_pos.1 as f32 * s);
-        let mut cross = Paint::default();
-        cross.set_color_rgba8(255, 255, 255, 180);
-        let arms = [
-            tiny_skia::Rect::from_xywh(
-                cx - CROSS_ARM,
-                cy - CROSS_THICK / 2.0,
-                CROSS_ARM * 2.0,
-                CROSS_THICK,
-            ),
-            tiny_skia::Rect::from_xywh(
-                cx - CROSS_THICK / 2.0,
-                cy - CROSS_ARM,
-                CROSS_THICK,
-                CROSS_ARM * 2.0,
-            ),
-        ];
-        for r in arms.into_iter().flatten() {
-            self.canvas.fill_rect(r, &cross, ident, None);
-        }
+        // Crosshair and magnifier are aiming aids, and only region selection
+        // aims. In window mode the highlight itself is the whole feedback.
+        if matches!(self.mode, Mode::Region) {
+            // A `+` marker centred on the cursor (physical pixels).
+            let (cx, cy) = (self.pointer_pos.0 as f32 * s, self.pointer_pos.1 as f32 * s);
+            let mut cross = Paint::default();
+            cross.set_color_rgba8(255, 255, 255, 180);
+            let arms = [
+                tiny_skia::Rect::from_xywh(
+                    cx - CROSS_ARM,
+                    cy - CROSS_THICK / 2.0,
+                    CROSS_ARM * 2.0,
+                    CROSS_THICK,
+                ),
+                tiny_skia::Rect::from_xywh(
+                    cx - CROSS_THICK / 2.0,
+                    cy - CROSS_ARM,
+                    CROSS_THICK,
+                    CROSS_ARM * 2.0,
+                ),
+            ];
+            for r in arms.into_iter().flatten() {
+                self.canvas.fill_rect(r, &cross, ident, None);
+            }
 
-        // Magnifier loupe around the cursor.
-        draw_magnifier(
-            &mut self.canvas,
-            &self.base,
-            cx as i32,
-            cy as i32,
-            self.phys_w as i32,
-            self.phys_h as i32,
-        );
+            // Magnifier loupe around the cursor.
+            draw_magnifier(
+                &mut self.canvas,
+                &self.base,
+                cx as i32,
+                cy as i32,
+                self.phys_w as i32,
+                self.phys_h as i32,
+            );
+        }
 
         // Blit to shm.
         let mmap = self.mmap.as_mut().unwrap();
@@ -182,6 +211,28 @@ impl Overlay {
             width: (x1 - x0) as u32,
             height: (y1 - y0) as u32,
         })
+    }
+
+    /// The window rectangle under the cursor, or `None` over bare desktop.
+    ///
+    /// First match wins, and the list arrives sorted topmost-first, so the window
+    /// that visibly covers the others is the one picked. `window.rs` owns that
+    /// ordering and the reasoning behind it.
+    fn hovered_rect(&self) -> Option<Rect> {
+        let Mode::Window(windows) = &self.mode else {
+            return None;
+        };
+        let s = self.scale as f64;
+        let (px, py) = (self.pointer_pos.0 * s, self.pointer_pos.1 * s);
+        windows
+            .iter()
+            .find(|r| {
+                px >= r.x as f64
+                    && py >= r.y as f64
+                    && px < (r.x + r.width) as f64
+                    && py < (r.y + r.height) as f64
+            })
+            .copied()
     }
 }
 
@@ -307,13 +358,20 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Overlay {
                 ..
             } if button == BTN_LEFT => match btn_state {
                 wl_pointer::ButtonState::Pressed => {
-                    state.anchor = Some(state.pointer_pos);
-                    state.dirty = true;
+                    // Only region selection drags; window mode acts on release
+                    // alone and has no anchor to set.
+                    if matches!(state.mode, Mode::Region) {
+                        state.anchor = Some(state.pointer_pos);
+                        state.dirty = true;
+                    }
                 }
                 wl_pointer::ButtonState::Released => {
-                    // Degenerate drags cancel: `None` here means no file and no
-                    // clipboard, same as Escape.
-                    state.selection = state.drag_rect().filter(Rect::is_usable);
+                    // `None` here means no file and no clipboard, same as Escape:
+                    // a degenerate drag, or a release over bare desktop.
+                    state.selection = match state.mode {
+                        Mode::Region => state.drag_rect().filter(Rect::is_usable),
+                        Mode::Window(_) => state.hovered_rect(),
+                    };
                     state.anchor = None;
                     state.running = false;
                 }
@@ -515,11 +573,41 @@ fn draw_magnifier(canvas: &mut Pixmap, base: &Pixmap, cx: i32, cy: i32, pw: i32,
     );
 }
 
-/// Show the selection overlay over `grab`, on the output named `target` (its
-/// connector name, e.g. `"eDP-1"`). Returns the selected rectangle, or `None` if
-/// cancelled. When `target` is `None` or names no bound output, the compositor
-/// picks the output — the single-display default.
+/// Drag out a rectangle over `grab`, on the output named `target` (its connector
+/// name, e.g. `"eDP-1"`). Returns the selected rectangle, or `None` if cancelled.
+/// When `target` is `None` or names no bound output, the compositor picks the
+/// output — the single-display default.
 pub fn select_region(grab: &RgbaImage, scale: i32, target: Option<&str>) -> Option<Rect> {
+    run(grab, scale, target, Mode::Region, "frame-region")
+}
+
+/// Pick one of `windows` over `grab`, same output rules as [`select_region`].
+/// Returns the chosen rectangle, or `None` if cancelled — by Escape, or by
+/// releasing over desktop that no window covers.
+///
+/// `windows` must be in physical grab pixels and sorted topmost-first;
+/// `window::visible_windows` produces exactly that.
+pub fn select_window(
+    grab: &RgbaImage,
+    scale: i32,
+    target: Option<&str>,
+    windows: Vec<Rect>,
+) -> Option<Rect> {
+    run(grab, scale, target, Mode::Window(windows), "frame-window")
+}
+
+/// The overlay proper: bring up a layer surface showing the frozen `grab` and
+/// run the event loop until `mode` yields a rectangle or the user cancels.
+///
+/// `namespace` is the layer-shell namespace, which the compositor can match
+/// rules against — distinct per mode so the two are separable there.
+fn run(
+    grab: &RgbaImage,
+    scale: i32,
+    target: Option<&str>,
+    mode: Mode,
+    namespace: &str,
+) -> Option<Rect> {
     let conn = Connection::connect_to_env().expect("Wayland connect failed");
     let mut queue = conn.new_event_queue();
     let qh = queue.handle();
@@ -535,6 +623,7 @@ pub fn select_region(grab: &RgbaImage, scale: i32, target: Option<&str>) -> Opti
         keyboard: None,
         pointer: None,
         outputs: Vec::new(),
+        mode,
         scale,
         phys_w,
         phys_h,
@@ -592,7 +681,7 @@ pub fn select_region(grab: &RgbaImage, scale: i32, target: Option<&str>) -> Opti
         &surface,
         target_output.as_ref(), // the matched output, or None → compositor picks
         Layer::Overlay,
-        "frame-region".to_string(),
+        namespace.to_string(),
         &qh,
         (),
     );

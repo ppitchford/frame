@@ -5,14 +5,16 @@ mod monitor;
 mod output;
 mod overlay;
 mod qao;
+mod window;
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("region") => region_capture(),
         Some("full") => full_capture(),
+        Some("window") => window_capture(),
         Some(output::SERVE_ARG) => output::serve_clipboard(),
         _ => {
-            eprintln!("usage: frame <region|full>");
+            eprintln!("usage: frame <region|full|window>");
             std::process::exit(2);
         }
     }
@@ -55,6 +57,45 @@ fn full_capture() {
     });
 
     if let Err(e) = qao::show(grab, scale) {
+        eprintln!("overlay failed: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Window capture: grab the active output, pick one window over the frozen grab,
+/// crop to its rectangle and hand that to the Quick Access Overlay.
+///
+/// The crop comes out of a full-output grab because `zwlr_screencopy_v1` copies
+/// outputs, not surfaces — so anything overlapping the chosen window is in the
+/// shot. See `window.rs`.
+fn window_capture() {
+    let target = monitor::active_output_name();
+    let (grab, scale) = capture::capture_output(target.as_deref()).unwrap_or_else(|e| {
+        eprintln!("capture failed: {e}");
+        std::process::exit(1);
+    });
+
+    // Without the compositor's window list there are no rectangles to offer, so
+    // say so rather than raising a picker that cannot be satisfied.
+    let Some(name) = target.as_deref() else {
+        eprintln!("no focused output; cannot enumerate windows");
+        std::process::exit(1);
+    };
+    let windows = window::visible_windows(name, scale, grab.width(), grab.height());
+    if windows.is_empty() {
+        eprintln!("no capturable windows on {name}");
+        std::process::exit(1);
+    }
+
+    let Some(rect) = overlay::select_window(&grab, scale, Some(name), windows) else {
+        println!("cancelled");
+        return;
+    };
+
+    let cropped =
+        image::imageops::crop_imm(&grab, rect.x, rect.y, rect.width, rect.height).to_image();
+
+    if let Err(e) = qao::show(cropped, scale) {
         eprintln!("overlay failed: {e}");
         std::process::exit(1);
     }
