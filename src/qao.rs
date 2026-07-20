@@ -1,9 +1,15 @@
 // Quick Access Overlay: a floating preview of the capture just taken, with
 // save / copy / annotate / discard actions.
+//
+// One `eframe` window, two modes. `Preview` is the landing screen — the capture
+// plus the action row. `Annotate` swaps the same window into `Edit`, the
+// annotation editor, reusing the loaded image and the save/copy paths rather
+// than launching a second window.
 
 use eframe::egui;
 use image::RgbaImage;
 
+use crate::editor::{self, Document};
 use crate::output;
 
 /// Matches the `windowrule=isfloating:1,appid:^frame$` in the mango config. The
@@ -19,14 +25,34 @@ const MAX_PREVIEW_H: f32 = 480.0;
 /// Room under the preview for the action row and its status line.
 const ACTION_BAR_H: f32 = 64.0;
 
+/// Extra height the editor's two toolbar rows add above the canvas.
+const TOOLBAR_H: f32 = 76.0;
+
 /// Enough width for four buttons, however narrow the capture was.
 const MIN_WINDOW_W: f32 = 340.0;
+
+/// The fixed annotation palette (Rosé Pine): love, gold, foam, iris, near-white
+/// text, near-black base. No free colour picker — this is the whole choice.
+const PALETTE: [editor::Rgba; 6] = [
+    [0xeb, 0x6f, 0x92, 0xff], // love
+    [0xf6, 0xc1, 0x77, 0xff], // gold
+    [0x9c, 0xcf, 0xd8, 0xff], // foam
+    [0xc4, 0xa7, 0xe7, 0xff], // iris
+    [0xe0, 0xde, 0xf4, 0xff], // text
+    [0x19, 0x17, 0x24, 0xff], // base
+];
+
+/// Default colour (love, `PALETTE[0]`) and stroke width for a fresh editor, plus
+/// the width bounds the toolbar's numeric field clamps to.
+const DEFAULT_COLOR: editor::Rgba = PALETTE[0];
+const DEFAULT_WIDTH: f32 = 4.0;
+const MIN_WIDTH: f32 = 1.0;
+const MAX_WIDTH: f32 = 100.0;
 
 /// Open the overlay on `img` and block until it closes.
 pub fn show(img: RgbaImage, scale: i32) -> Result<(), String> {
     let preview = preview_size(&img, scale);
-    let window = egui::vec2(preview.x.max(MIN_WINDOW_W), preview.y + ACTION_BAR_H);
-    let texture_src = downscale_for_texture(&img, preview, scale);
+    let window = egui::vec2(preview.x.max(MIN_WINDOW_W), preview.y + ACTION_BAR_H + TOOLBAR_H);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -38,7 +64,7 @@ pub fn show(img: RgbaImage, scale: i32) -> Result<(), String> {
     eframe::run_native(
         "frame",
         options,
-        Box::new(move |cc| Ok(Box::new(Qao::new(cc, img, texture_src, preview)))),
+        Box::new(move |cc| Ok(Box::new(Qao::new(cc, img, scale, preview)))),
     )
     .map_err(|e| format!("overlay failed: {e}"))
 }
@@ -47,7 +73,7 @@ pub fn show(img: RgbaImage, scale: i32) -> Result<(), String> {
 /// never needs to exceed the preview's physical size — and a full-resolution
 /// grab (2880×1920 fullscreen) overruns the GPU's maximum texture side. Resize a
 /// copy down to `preview × scale` for the texture, leaving the full-resolution
-/// grab untouched for save and copy. Region grabs already fit, so this returns
+/// image untouched for save and copy. Region grabs already fit, so this returns
 /// them unchanged.
 fn downscale_for_texture(img: &RgbaImage, preview: egui::Vec2, scale: i32) -> RgbaImage {
     let s = scale.max(1) as f32;
@@ -63,6 +89,23 @@ fn downscale_for_texture(img: &RgbaImage, preview: egui::Vec2, scale: i32) -> Rg
     )
 }
 
+/// Load `img` as a texture sized to the preview. Shared by the initial preview
+/// and every editor re-render.
+fn make_texture(
+    ctx: &egui::Context,
+    name: &str,
+    img: &RgbaImage,
+    preview: egui::Vec2,
+    scale: i32,
+) -> egui::TextureHandle {
+    let src = downscale_for_texture(img, preview, scale);
+    let color = egui::ColorImage::from_rgba_unmultiplied(
+        [src.width() as usize, src.height() as usize],
+        src.as_raw(),
+    );
+    ctx.load_texture(name, color, egui::TextureOptions::LINEAR)
+}
+
 /// The grab is in physical pixels; egui lays out in logical points, and the
 /// compositor reports `scale` pixels per point. Dividing draws the preview 1:1
 /// against the captured pixels, then it shrinks to fit if it would be oversized.
@@ -75,46 +118,91 @@ fn preview_size(img: &RgbaImage, scale: i32) -> egui::Vec2 {
 }
 
 struct Qao {
+    /// The original, unannotated capture — full resolution, for preview save/copy.
     img: RgbaImage,
-    texture: egui::TextureHandle,
+    scale: i32,
     preview: egui::Vec2,
     saved: bool,
     copied: bool,
     /// Outcome of the last action: `Ok` reports it, `Err` explains the failure.
     /// Both are shown; a silent failure here is what the clipboard bug looked like.
     status: Option<Result<String, String>>,
+    mode: Mode,
+}
+
+enum Mode {
+    Preview { texture: egui::TextureHandle },
+    Edit(EditorState),
+}
+
+/// Live state of the annotation editor: the document plus the current tool
+/// settings and the flattened texture on screen.
+struct EditorState {
+    doc: Document,
+    tool: editor::Tool,
+    color: editor::Rgba,
+    width: f32,
+    filled: bool,
+    /// Drag anchor in base-image pixels, present only mid-drag.
+    drag: Option<editor::Point>,
+    /// The flattened render, downscaled for the GPU. Rebuilt when `dirty`.
+    texture: egui::TextureHandle,
+    dirty: bool,
 }
 
 impl Qao {
     fn new(
         cc: &eframe::CreationContext<'_>,
         img: RgbaImage,
-        texture_src: RgbaImage,
+        scale: i32,
         preview: egui::Vec2,
     ) -> Self {
-        // The texture is the (possibly downscaled) preview source; `img` stays
-        // full-resolution for save and copy. `from_rgba_unmultiplied` asserts the
-        // buffer matches the stated size, so the dimensions come from that image.
-        let color = egui::ColorImage::from_rgba_unmultiplied(
-            [texture_src.width() as usize, texture_src.height() as usize],
-            texture_src.as_raw(),
-        );
-        let texture = cc
-            .egui_ctx
-            .load_texture("capture", color, egui::TextureOptions::LINEAR);
-
+        let texture = make_texture(&cc.egui_ctx, "capture", &img, preview, scale);
         Self {
             img,
-            texture,
+            scale,
             preview,
             saved: false,
             copied: false,
             status: None,
+            mode: Mode::Preview { texture },
+        }
+    }
+
+    /// Enter the editor: a fresh document over a copy of the capture, rendered
+    /// once (an empty document renders to the base image).
+    fn enter_editor(&mut self, ctx: &egui::Context) {
+        let doc = Document::new(self.img.clone());
+        let texture = make_texture(ctx, "editor", &editor::render(&doc), self.preview, self.scale);
+        self.mode = Mode::Edit(EditorState {
+            doc,
+            tool: editor::Tool::Arrow,
+            color: DEFAULT_COLOR,
+            width: DEFAULT_WIDTH,
+            filled: false,
+            drag: None,
+            texture,
+            dirty: false,
+        });
+        // Action state carries no meaning across the mode switch.
+        self.saved = false;
+        self.copied = false;
+        self.status = None;
+    }
+
+    /// The image the action row acts on: the raw capture in Preview, the
+    /// flattened document in Edit. Owned so the borrow on `self.mode` ends before
+    /// the caller writes `self.status`.
+    fn flattened(&self) -> RgbaImage {
+        match &self.mode {
+            Mode::Preview { .. } => self.img.clone(),
+            Mode::Edit(ed) => editor::render(&ed.doc),
         }
     }
 
     fn save(&mut self) {
-        self.status = Some(match output::save(&self.img) {
+        let img = self.flattened();
+        self.status = Some(match output::save(&img) {
             Ok(path) => {
                 self.saved = true;
                 Ok(format!("Saved {}", path.display()))
@@ -124,7 +212,8 @@ impl Qao {
     }
 
     fn copy(&mut self) {
-        self.status = Some(match output::copy(&self.img) {
+        let img = self.flattened();
+        self.status = Some(match output::copy(&img) {
             Ok(()) => {
                 self.copied = true;
                 Ok("Copied to clipboard".to_string())
@@ -132,16 +221,16 @@ impl Qao {
             Err(e) => Err(e),
         });
     }
-}
 
-impl eframe::App for Qao {
-    // egui 0.35 hands the app a `Ui` directly; the panel is the framework's job.
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+    fn preview_ui(&mut self, ui: &mut egui::Ui) {
+        // Copy the id out so the `&self.mode` borrow ends before the Annotate
+        // handler reassigns `self.mode`.
+        let Mode::Preview { texture } = &self.mode else {
+            return;
+        };
+        let tex_id = texture.id();
 
-        ui.image((self.texture.id(), self.preview));
+        ui.image((tex_id, self.preview));
         ui.separator();
 
         ui.horizontal(|ui| {
@@ -154,13 +243,135 @@ impl eframe::App for Qao {
             if ui.button(label("Copy", self.copied)).clicked() {
                 self.copy();
             }
-            ui.add_enabled(false, egui::Button::new("Annotate"))
-                .on_disabled_hover_text("No annotation editor yet.");
+            if ui.button("Annotate").clicked() {
+                self.enter_editor(ui.ctx());
+            }
             if ui.button("Discard").clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
 
+        self.status_line(ui);
+    }
+
+    fn editor_ui(&mut self, ui: &mut egui::Ui) {
+        let preview = self.preview;
+        let scale = self.scale;
+        // Read the action ticks out before borrowing `self.mode`.
+        let (saved, copied) = (self.saved, self.copied);
+
+        // The action row can't call `self.save`/`copy` while `ed` borrows
+        // `self.mode`, so it records intent and we act once the borrow ends.
+        let mut do_save = false;
+        let mut do_copy = false;
+        let mut do_close = false;
+
+        if let Mode::Edit(ed) = &mut self.mode {
+            toolbar(ui, ed);
+            ui.separator();
+
+            // The image is a click-and-drag canvas: press anchors, drag previews,
+            // release commits an op.
+            let (rect, response) =
+                ui.allocate_exact_size(preview, egui::Sense::click_and_drag());
+            let painter = ui.painter_at(rect);
+            painter.image(
+                ed.texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+
+            let (img_w, img_h) = (ed.doc.base.width() as f32, ed.doc.base.height() as f32);
+            // Screen points ↔ base-image pixels. The texture fills `rect`
+            // regardless of its own resolution, so the rect↔image ratio is the
+            // whole mapping — scale never enters here.
+            let to_image = |p: egui::Pos2| {
+                let fx = ((p.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+                let fy = ((p.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
+                editor::Point::new(fx * img_w, fy * img_h)
+            };
+            let to_screen = |pt: editor::Point| {
+                egui::pos2(
+                    rect.min.x + pt.x / img_w * rect.width(),
+                    rect.min.y + pt.y / img_h * rect.height(),
+                )
+            };
+
+            if response.drag_started() {
+                ed.drag = response.interact_pointer_pos().map(to_image);
+            }
+
+            // Live preview via the painter — feedback only. The committed pixels
+            // still come from `render()` walking the op list in order.
+            if let (Some(anchor), Some(cursor)) = (ed.drag, response.interact_pointer_pos()) {
+                let disp_width = ed.width * rect.width() / img_w;
+                draw_preview(
+                    &painter,
+                    ed.tool,
+                    to_screen(anchor),
+                    cursor,
+                    ed.color,
+                    disp_width,
+                    ed.filled,
+                );
+            }
+
+            if response.drag_stopped() {
+                if let (Some(anchor), Some(cursor)) =
+                    (ed.drag.take(), response.interact_pointer_pos())
+                {
+                    let op = editor::Op::from_drag(
+                        ed.tool,
+                        anchor,
+                        to_image(cursor),
+                        ed.color,
+                        ed.width,
+                        ed.filled,
+                    );
+                    ed.doc.push(op);
+                    ed.dirty = true;
+                }
+            }
+
+            // Re-render only on an edit, never per frame.
+            if ed.dirty {
+                let flat = editor::render(&ed.doc);
+                ed.texture = make_texture(ui.ctx(), "editor", &flat, preview, scale);
+                ed.dirty = false;
+            }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                // Save and Copy act on the flattened render, with the same
+                // non-terminal semantics as Preview. No round-trip back to
+                // Preview this milestone — Discard closes.
+                if ui.button(label("Save", saved)).clicked() {
+                    do_save = true;
+                }
+                if ui.button(label("Copy", copied)).clicked() {
+                    do_copy = true;
+                }
+                if ui.button("Discard").clicked() {
+                    do_close = true;
+                }
+            });
+        }
+
+        if do_save {
+            self.save();
+        }
+        if do_copy {
+            self.copy();
+        }
+        if do_close {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        self.status_line(ui);
+    }
+
+    fn status_line(&self, ui: &mut egui::Ui) {
         match &self.status {
             Some(Ok(msg)) => {
                 ui.colored_label(egui::Color32::from_rgb(0x9c, 0xcf, 0xd8), msg);
@@ -171,6 +382,152 @@ impl eframe::App for Qao {
             None => {}
         }
     }
+}
+
+impl eframe::App for Qao {
+    // egui 0.35 hands the app a `Ui` directly; the panel is the framework's job.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        match self.mode {
+            Mode::Preview { .. } => self.preview_ui(ui),
+            Mode::Edit(_) => self.editor_ui(ui),
+        }
+    }
+}
+
+/// The editor's two toolbar rows: tools, fill, and undo/redo; then the colour
+/// palette and stroke-width presets. Also services the `Ctrl+Z` / `Ctrl+Shift+Z`
+/// shortcuts. Anything that changes the document sets `dirty` so the canvas
+/// re-renders this frame.
+fn toolbar(ui: &mut egui::Ui, ed: &mut EditorState) {
+    // `command` is Ctrl on Linux. Redo is the shifted chord.
+    let (undo_key, redo_key) = ui.input(|i| {
+        let z = i.key_pressed(egui::Key::Z) && i.modifiers.command;
+        (z && !i.modifiers.shift, z && i.modifiers.shift)
+    });
+    if undo_key && ed.doc.can_undo() {
+        ed.doc.undo();
+        ed.dirty = true;
+    }
+    if redo_key && ed.doc.can_redo() {
+        ed.doc.redo();
+        ed.dirty = true;
+    }
+
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut ed.tool, editor::Tool::Arrow, "Arrow");
+        ui.selectable_value(&mut ed.tool, editor::Tool::Line, "Line");
+        ui.selectable_value(&mut ed.tool, editor::Tool::Rect, "Rect");
+        ui.selectable_value(&mut ed.tool, editor::Tool::Ellipse, "Oval");
+        ui.separator();
+        // Fill only means something for the tools with an interior.
+        let fillable = matches!(ed.tool, editor::Tool::Rect | editor::Tool::Ellipse);
+        ui.add_enabled(fillable, egui::Checkbox::new(&mut ed.filled, "Fill"));
+        ui.separator();
+        if ui
+            .add_enabled(ed.doc.can_undo(), egui::Button::new("Undo"))
+            .clicked()
+        {
+            ed.doc.undo();
+            ed.dirty = true;
+        }
+        if ui
+            .add_enabled(ed.doc.can_redo(), egui::Button::new("Redo"))
+            .clicked()
+        {
+            ed.doc.redo();
+            ed.dirty = true;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        for color in PALETTE {
+            if color_swatch(ui, color, ed.color == color) {
+                ed.color = color;
+            }
+        }
+        ui.separator();
+        ui.label("Width");
+        ui.add(
+            egui::DragValue::new(&mut ed.width)
+                .speed(0.25)
+                .range(MIN_WIDTH..=MAX_WIDTH)
+                .max_decimals(0)
+                .suffix(" px"),
+        );
+    });
+}
+
+/// A clickable colour square; a white frame marks the active one. Returns
+/// whether it was clicked.
+fn color_swatch(ui: &mut egui::Ui, color: editor::Rgba, selected: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+    let col = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, col);
+    if selected {
+        painter.rect_stroke(
+            rect,
+            3.0,
+            egui::Stroke::new(2.0, egui::Color32::WHITE),
+            egui::StrokeKind::Middle,
+        );
+    }
+    response.clicked()
+}
+
+/// Paint the in-progress op in screen space with the egui painter. Fidelity to
+/// the committed render matters less than responsiveness — this is drag feedback,
+/// redrawn every frame, never saved.
+fn draw_preview(
+    painter: &egui::Painter,
+    tool: editor::Tool,
+    a: egui::Pos2,
+    b: egui::Pos2,
+    color: editor::Rgba,
+    width: f32,
+    filled: bool,
+) {
+    let col = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+    let stroke = egui::Stroke::new(width.max(1.0), col);
+    match tool {
+        editor::Tool::Arrow => painter.arrow(a, b - a, stroke),
+        editor::Tool::Line => {
+            painter.line_segment([a, b], stroke);
+        }
+        editor::Tool::Rect => {
+            let rect = egui::Rect::from_two_pos(a, b);
+            if filled {
+                painter.rect_filled(rect, 0.0, col);
+            }
+            painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+        }
+        editor::Tool::Ellipse => {
+            let pts = ellipse_points(a, b);
+            if filled {
+                painter.add(egui::Shape::convex_polygon(pts, col, stroke));
+            } else {
+                painter.add(egui::Shape::closed_line(pts, stroke));
+            }
+        }
+    }
+}
+
+/// Points around the ellipse inscribed in the `a`–`b` bounding box, for the
+/// preview path. egui has no ellipse primitive, so sample one.
+fn ellipse_points(a: egui::Pos2, b: egui::Pos2) -> Vec<egui::Pos2> {
+    const SEGMENTS: usize = 48;
+    let center = egui::pos2((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+    let (rx, ry) = ((a.x - b.x).abs() / 2.0, (a.y - b.y).abs() / 2.0);
+    (0..SEGMENTS)
+        .map(|i| {
+            let t = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            egui::pos2(center.x + rx * t.cos(), center.y + ry * t.sin())
+        })
+        .collect()
 }
 
 fn label(action: &str, done: bool) -> String {

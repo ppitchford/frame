@@ -1,6 +1,7 @@
 // frame — Wayland-native screenshot and annotation tool for MangoWM.
 
 mod capture;
+mod editor;
 mod monitor;
 mod output;
 mod overlay;
