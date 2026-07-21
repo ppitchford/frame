@@ -7,6 +7,11 @@
 // the locked decisions in ROADMAP.md.
 
 use image::RgbaImage;
+use skrifa::{
+    FontRef, MetadataProvider,
+    instance::{LocationRef, Size},
+    outline::{DrawSettings, OutlinePen},
+};
 use tiny_skia::{
     FillRule, IntRect, IntSize, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint,
     Rect, Stroke, Transform,
@@ -43,6 +48,17 @@ const MIN_SAMPLE_DIST: f32 = 2.0;
 /// the op failed — and region, window and fullscreen captures are all cropped
 /// from the same physical grab, so a pixel means the same thing in each.
 const BLUR_SIGMA: f32 = 12.0;
+
+/// Atkinson Hyperlegible Regular, embedded. Chosen for legibility over arbitrary
+/// screenshot pixels — it disambiguates `O`/`0` and `I`/`l`/`1` by design — and
+/// it happens to be the smallest sans-serif available at 29 KB. SIL OFL; the
+/// licence sits beside it in `assets/`.
+pub const FONT: &[u8] = include_bytes!("../assets/AtkinsonHyperlegible-Regular.otf");
+
+/// Starting text size in base-image pixels.
+pub const DEFAULT_TEXT_SIZE: f32 = 32.0;
+pub const MIN_TEXT_SIZE: f32 = 8.0;
+pub const MAX_TEXT_SIZE: f32 = 200.0;
 
 /// One annotation. Milestone 1 is the four two-point vector tools; milestone 2
 /// adds the freehand stroke and the highlighter. Text and the destructive ops
@@ -100,6 +116,15 @@ pub enum Op {
         a: Point,
         b: Point,
     },
+    /// A single line of text. `pos` is the **top-left of the line box**, not the
+    /// baseline — a click should put text below-right of the cursor, the way a
+    /// caret implies. The baseline is derived at render from the font's ascent.
+    Text {
+        pos: Point,
+        text: String,
+        color: Rgba,
+        size: f32,
+    },
 }
 
 /// Which tool a drag produces. Kept separate from `Op` because the toolbar picks
@@ -113,6 +138,7 @@ pub enum Tool {
     Pencil,
     Highlight,
     Blur,
+    Text,
 }
 
 impl Op {
@@ -138,6 +164,10 @@ impl Op {
             Tool::Ellipse => Op::Ellipse { a, b, color, width, filled },
             Tool::Highlight => Op::Highlight { a, b, color },
             Tool::Blur => Op::Blur { a, b },
+            // Text is the first tool a drag does not produce. It is committed by
+            // typing, not by releasing the pointer, so a drag with it selects
+            // nothing and must commit nothing.
+            Tool::Text => return None,
             Tool::Pencil => Op::Freehand {
                 points: decimate(path, MIN_SAMPLE_DIST),
                 color,
@@ -296,6 +326,111 @@ fn draw_op(pm: &mut Pixmap, op: &Op) {
             }
         }
         Op::Blur { a, b } => draw_blur(pm, a, b),
+        Op::Text { pos, ref text, color, size } => draw_text(pm, pos, text, color, size),
+    }
+}
+
+/// Collects skrifa's glyph outlines into a tiny-skia path.
+///
+/// The two APIs agree method for method, so the adapter's whole job is the
+/// **coordinate flip**: font outlines are Y-up from an origin on the baseline,
+/// while tiny-skia is Y-down from the image's top-left. Every emitted point is
+/// therefore `pen_x + x` across and `baseline - y` down. Getting this backwards
+/// renders legible-looking text mirrored about the baseline, which is why it has
+/// its own test.
+struct GlyphPen {
+    pb: PathBuilder,
+    pen_x: f32,
+    baseline: f32,
+}
+
+impl GlyphPen {
+    fn at(&self, x: f32, y: f32) -> (f32, f32) {
+        (self.pen_x + x, self.baseline - y)
+    }
+}
+
+impl OutlinePen for GlyphPen {
+    fn move_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.at(x, y);
+        self.pb.move_to(x, y);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.at(x, y);
+        self.pb.line_to(x, y);
+    }
+
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        let (cx, cy) = self.at(cx, cy);
+        let (x, y) = self.at(x, y);
+        self.pb.quad_to(cx, cy, x, y);
+    }
+
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+        let (cx0, cy0) = self.at(cx0, cy0);
+        let (cx1, cy1) = self.at(cx1, cy1);
+        let (x, y) = self.at(x, y);
+        self.pb.cubic_to(cx0, cy0, cx1, cy1, x, y);
+    }
+
+    fn close(&mut self) {
+        self.pb.close();
+    }
+}
+
+/// Draw one line of `text` with its line box starting at `pos`.
+///
+/// Glyphs are filled paths, not a rasterised mask — the same `fill` every other
+/// op uses — so text composites identically to the rest and a later blur can
+/// smear it like anything else.
+///
+/// `FontRef` is parsed per op rather than cached. It is a zero-copy parse of the
+/// table directory and `render` runs on edits, not per frame; caching it behind
+/// a `OnceLock` is the obvious optimisation and is deliberately not done before
+/// there is a measured reason.
+fn draw_text(pm: &mut Pixmap, pos: Point, text: &str, color: Rgba, size: f32) {
+    if text.is_empty() {
+        return;
+    }
+    let Ok(font) = FontRef::new(FONT) else {
+        return;
+    };
+
+    let px = Size::new(size);
+    let metrics = font.metrics(px, LocationRef::default());
+    let glyph_metrics = font.glyph_metrics(px, LocationRef::default());
+    let charmap = font.charmap();
+    let outlines = font.outline_glyphs();
+
+    // `pos` is the top of the line box; the baseline sits one ascent below it.
+    let baseline = pos.y + metrics.ascent;
+    let mut pen_x = pos.x;
+
+    for ch in text.chars() {
+        // A character the font has no glyph for is skipped, not fatal — it costs
+        // one missing character rather than the whole annotation.
+        let Some(gid) = charmap.map(ch) else {
+            continue;
+        };
+
+        if let Some(glyph) = outlines.get(gid) {
+            let mut pen = GlyphPen {
+                pb: PathBuilder::new(),
+                pen_x,
+                baseline,
+            };
+            let settings = DrawSettings::unhinted(px, LocationRef::default());
+            if glyph.draw(settings, &mut pen).is_ok()
+                && let Some(path) = pen.pb.finish()
+            {
+                fill(pm, &path, color);
+            }
+        }
+
+        // Advance even when the glyph had no outline — a space has an advance
+        // and no contours, and dropping it would close up the gap.
+        pen_x += glyph_metrics.advance_width(gid).unwrap_or(0.0);
     }
 }
 
@@ -790,6 +925,119 @@ mod tests {
         d.push(blur(Point::new(5.0, 5.0), Point::new(25.0, 25.0)));
         let out = render(&d);
         assert!(out.pixels().all(|px| px[3] == 255), "blur must not open holes");
+    }
+
+    fn text_op(pos: Point, s: &str, size: f32) -> Op {
+        Op::Text {
+            pos,
+            text: s.to_string(),
+            color: [255, 0, 0, 255],
+            size,
+        }
+    }
+
+    /// Bounding box of red ink over a black base, as `(x0, y0, x1, y1)`.
+    fn ink_bounds(img: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
+        let mut bounds: Option<(u32, u32, u32, u32)> = None;
+        for (x, y, px) in img.enumerate_pixels() {
+            if px[0] > 100 {
+                bounds = Some(match bounds {
+                    None => (x, y, x, y),
+                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                });
+            }
+        }
+        bounds
+    }
+
+    #[test]
+    fn text_renders_below_its_anchor_not_above_it() {
+        // The Y flip is the one thing in this milestone that can invert
+        // silently. Font outlines are Y-up from a baseline origin; tiny-skia is
+        // Y-down from the top-left. Flipped the wrong way the glyphs render
+        // *above* the anchor and still look like perfectly good text, so only a
+        // positional assertion catches it.
+        let size = 40.0;
+        let anchor = Point::new(10.0, 40.0);
+        let mut d = Document::new(black(200, 140));
+        d.push(text_op(anchor, "Hxy", size));
+
+        let out = render(&d);
+        let (x0, y0, _, y1) = ink_bounds(&out).expect("text drew ink");
+
+        // One row of tolerance for anti-aliasing at the cap line.
+        assert!(
+            y0 + 1 >= anchor.y as u32,
+            "no ink above the anchor; topmost inked row was {y0}, anchor at {}",
+            anchor.y
+        );
+        assert!(
+            x0 + 1 >= anchor.x as u32,
+            "ink starts at the anchor; leftmost inked column was {x0}"
+        );
+        assert!(
+            (y1 as f32) < anchor.y + size * 1.6,
+            "ink stays within about one line box below the anchor; bottom row {y1}"
+        );
+    }
+
+    #[test]
+    fn text_advances_so_more_characters_reach_further() {
+        let render_at = |s: &str| {
+            let mut d = Document::new(black(400, 100));
+            d.push(text_op(Point::new(10.0, 10.0), s, 40.0));
+            render(&d)
+        };
+
+        let one = ink_bounds(&render_at("M")).expect("one glyph drew");
+        let two = ink_bounds(&render_at("MM")).expect("two glyphs drew");
+        assert!(
+            two.2 > one.2,
+            "two glyphs reach further right than one: {} vs {}",
+            two.2,
+            one.2
+        );
+
+        // A space has an advance and no contours. Advancing only on glyphs that
+        // drew something would close the gap up, so the spaced string must be
+        // the wider one.
+        let tight = ink_bounds(&render_at("MM")).expect("drew");
+        let spaced = ink_bounds(&render_at("M M")).expect("drew");
+        assert!(
+            spaced.2 > tight.2,
+            "a space advances the pen: {} vs {}",
+            spaced.2,
+            tight.2
+        );
+    }
+
+    #[test]
+    fn empty_text_renders_nothing() {
+        let base = black(50, 50);
+        let clean = render(&Document::new(base.clone()));
+        let mut d = Document::new(base);
+        d.push(text_op(Point::new(5.0, 5.0), "", 20.0));
+        assert_eq!(render(&d).as_raw(), clean.as_raw());
+    }
+
+    #[test]
+    fn characters_without_a_glyph_are_skipped_not_fatal() {
+        // A CJK ideograph this Latin font has no glyph for, between two it does.
+        let mut d = Document::new(black(240, 100));
+        d.push(text_op(Point::new(10.0, 10.0), "A漢B", 30.0));
+        let out = render(&d);
+        assert!(
+            ink_bounds(&out).is_some(),
+            "the Latin characters still drew around the missing glyph"
+        );
+    }
+
+    #[test]
+    fn text_leaves_the_output_fully_opaque() {
+        let mut d = Document::new(black(200, 100));
+        d.push(text_op(Point::new(10.0, 10.0), "opaque", 30.0));
+        let out = render(&d);
+        assert!(out.pixels().all(|px| px[3] == 255), "text must not open holes");
     }
 
     #[test]

@@ -38,6 +38,34 @@ const MIN_WINDOW_W: f32 = 580.0;
 /// selected colour would imply that it did.
 const DESTRUCTIVE_PREVIEW: egui::Color32 = egui::Color32::from_rgb(0xe0, 0xde, 0xf4);
 
+/// egui family name for the embedded annotation font. Registering it under its
+/// own name — rather than replacing the default proportional family — sets the
+/// canvas preview in the face the commit will use while leaving the toolbar and
+/// status line in egui's own font.
+const ANNOTATION_FONT: &str = "annotation";
+
+/// Register the annotation font with egui under `ANNOTATION_FONT`.
+fn install_font(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        ANNOTATION_FONT.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(editor::FONT)),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(ANNOTATION_FONT.into()),
+        vec![ANNOTATION_FONT.to_owned()],
+    );
+    ctx.set_fonts(fonts);
+}
+
+/// A text entry in progress: where it will land, and what has been typed so far.
+/// Present only between the click that opens it and the key that commits or
+/// cancels it.
+struct TextEntry {
+    pos: editor::Point,
+    buffer: String,
+}
+
 /// The fixed annotation palette (Rosé Pine): love, gold, foam, iris, near-white
 /// text, near-black base. No free colour picker — this is the whole choice.
 const PALETTE: [editor::Rgba; 6] = [
@@ -149,7 +177,11 @@ struct EditorState {
     tool: editor::Tool,
     color: editor::Rgba,
     width: f32,
+    size: f32,
     filled: bool,
+    /// The open text entry, if any. While this is `Some`, the editor is in a
+    /// typing mode that takes `Escape` and `Ctrl+Z` away from their usual jobs.
+    typing: Option<TextEntry>,
     /// The in-progress drag, sampled in base-image pixels, present only mid-drag.
     /// A drag is always a point sequence — the pencil consumes all of it, the
     /// two-point tools read only its ends.
@@ -166,6 +198,7 @@ impl Qao {
         scale: i32,
         preview: egui::Vec2,
     ) -> Self {
+        install_font(&cc.egui_ctx);
         let texture = make_texture(&cc.egui_ctx, "capture", &img, preview, scale);
         Self {
             img,
@@ -188,7 +221,9 @@ impl Qao {
             tool: editor::Tool::Arrow,
             color: DEFAULT_COLOR,
             width: DEFAULT_WIDTH,
+            size: editor::DEFAULT_TEXT_SIZE,
             filled: false,
+            typing: None,
             drag: None,
             texture,
             dirty: false,
@@ -307,6 +342,23 @@ impl Qao {
                 )
             };
 
+            // A click with the text tool opens an entry where it landed. If one
+            // is already open, it commits first, so clicking around the canvas
+            // places a series of labels rather than losing each previous one.
+            if ed.tool == editor::Tool::Text
+                && response.clicked()
+                && let Some(p) = response.interact_pointer_pos()
+            {
+                commit_text(ed);
+                ed.typing = Some(TextEntry {
+                    pos: to_image(p),
+                    buffer: String::new(),
+                });
+            }
+            if ed.typing.is_some() {
+                handle_typing(ui, ed);
+            }
+
             if response.drag_started() {
                 ed.drag = Some(Vec::new());
             }
@@ -325,6 +377,32 @@ impl Qao {
                 let screen: Vec<egui::Pos2> = path.iter().copied().map(to_screen).collect();
                 let disp_width = ed.width * rect.width() / img_w;
                 draw_preview(&painter, ed.tool, &screen, ed.color, disp_width, ed.filled);
+            }
+
+            // The open entry, drawn in the same face the commit will use. egui
+            // does its own layout while the commit uses skrifa advances, so
+            // spacing differs slightly — the same class of accepted mismatch as
+            // the pencil settling onto its smoothed curve.
+            if let Some(entry) = ed.typing.as_ref() {
+                let anchor = to_screen(entry.pos);
+                let disp_size = ed.size * rect.width() / img_w;
+                let galley = painter.layout_no_wrap(
+                    entry.buffer.clone(),
+                    egui::FontId::new(disp_size, egui::FontFamily::Name(ANNOTATION_FONT.into())),
+                    color32(ed.color),
+                );
+                let height = galley.size().y.max(disp_size);
+                let caret_x = anchor.x + galley.size().x;
+                painter.galley(anchor, galley, color32(ed.color));
+                // Solid, not blinking: a blink would need repaint scheduling for
+                // no real gain.
+                painter.line_segment(
+                    [
+                        egui::pos2(caret_x, anchor.y),
+                        egui::pos2(caret_x, anchor.y + height),
+                    ],
+                    egui::Stroke::new(1.5, DESTRUCTIVE_PREVIEW),
+                );
             }
 
             // `from_drag` yields `None` for a drag with no samples at all, which
@@ -391,7 +469,12 @@ impl Qao {
 impl eframe::App for Qao {
     // egui 0.35 hands the app a `Ui` directly; the panel is the framework's job.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Escape closes the overlay — except while a text entry is open, where
+        // it cancels that entry instead. The typing state takes the key first;
+        // otherwise a mistyped label would close the window and lose the whole
+        // annotation.
+        let typing = matches!(&self.mode, Mode::Edit(ed) if ed.typing.is_some());
+        if !typing && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
@@ -407,11 +490,17 @@ impl eframe::App for Qao {
 /// shortcuts. Anything that changes the document sets `dirty` so the canvas
 /// re-renders this frame.
 fn toolbar(ui: &mut egui::Ui, ed: &mut EditorState) {
-    // `command` is Ctrl on Linux. Redo is the shifted chord.
-    let (undo_key, redo_key) = ui.input(|i| {
-        let z = i.key_pressed(egui::Key::Z) && i.modifiers.command;
-        (z && !i.modifiers.shift, z && i.modifiers.shift)
-    });
+    // `command` is Ctrl on Linux. Redo is the shifted chord. Both are suppressed
+    // while a text entry is open: Ctrl+Z mid-word should not reach back and undo
+    // a previous op.
+    let (undo_key, redo_key) = if ed.typing.is_some() {
+        (false, false)
+    } else {
+        ui.input(|i| {
+            let z = i.key_pressed(egui::Key::Z) && i.modifiers.command;
+            (z && !i.modifiers.shift, z && i.modifiers.shift)
+        })
+    };
     if undo_key && ed.doc.can_undo() {
         ed.doc.undo();
         ed.dirty = true;
@@ -420,6 +509,8 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut EditorState) {
         ed.doc.redo();
         ed.dirty = true;
     }
+
+    let tool_before = ed.tool;
 
     // Wrapped, so a tool row that outgrows the window folds onto a second line
     // instead of running off the edge.
@@ -431,6 +522,7 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut EditorState) {
         ui.selectable_value(&mut ed.tool, editor::Tool::Pencil, "Pencil");
         ui.selectable_value(&mut ed.tool, editor::Tool::Highlight, "Mark");
         ui.selectable_value(&mut ed.tool, editor::Tool::Blur, "Blur");
+        ui.selectable_value(&mut ed.tool, editor::Tool::Text, "Text");
         ui.separator();
         // Fill only means something for the tools with an interior. The
         // highlighter is always filled and the pencil never is, so neither is
@@ -454,7 +546,13 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut EditorState) {
         }
     });
 
-    ui.horizontal(|ui| {
+    // Switching tools commits an open entry rather than dropping it — a
+    // half-typed label should not vanish because the next tool was clicked.
+    if ed.tool != tool_before {
+        commit_text(ed);
+    }
+
+    ui.horizontal_wrapped(|ui| {
         for color in PALETTE {
             if color_swatch(ui, color, ed.color == color) {
                 ed.color = color;
@@ -469,7 +567,80 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut EditorState) {
                 .max_decimals(0)
                 .suffix(" px"),
         );
+        ui.label("Size");
+        ui.add(
+            egui::DragValue::new(&mut ed.size)
+                .speed(0.5)
+                .range(editor::MIN_TEXT_SIZE..=editor::MAX_TEXT_SIZE)
+                .max_decimals(0)
+                .suffix(" px"),
+        );
     });
+}
+
+/// Consume this frame's keystrokes into the open text entry.
+///
+/// `Escape` cancels, `Enter` commits, `Backspace` deletes, everything printable
+/// appends. This runs only while an entry is open, and the two shortcuts it
+/// shadows — `Escape` closing the window, `Ctrl+Z` undoing — are suppressed at
+/// their own sites for exactly that window.
+fn handle_typing(ui: &egui::Ui, ed: &mut EditorState) {
+    let (typed, backspace, enter, escape) = ui.input(|i| {
+        let mut typed = String::new();
+        for event in &i.events {
+            if let egui::Event::Text(s) = event {
+                typed.push_str(s);
+            }
+        }
+        (
+            typed,
+            i.key_pressed(egui::Key::Backspace),
+            i.key_pressed(egui::Key::Enter),
+            i.key_pressed(egui::Key::Escape),
+        )
+    });
+
+    if escape {
+        // Discard outright — the entry was never in the document to undo.
+        ed.typing = None;
+        return;
+    }
+    if enter {
+        commit_text(ed);
+        return;
+    }
+    let Some(entry) = ed.typing.as_mut() else {
+        return;
+    };
+    if backspace {
+        entry.buffer.pop();
+    }
+    entry.buffer.push_str(&typed);
+}
+
+/// Commit the open text entry to the document, if there is one worth keeping.
+///
+/// An empty buffer commits nothing: clicking to place a caret and then clicking
+/// elsewhere should leave no trace, and an empty op would still consume an undo
+/// step.
+fn commit_text(ed: &mut EditorState) {
+    let Some(entry) = ed.typing.take() else {
+        return;
+    };
+    if entry.buffer.is_empty() {
+        return;
+    }
+    ed.doc.push(editor::Op::Text {
+        pos: entry.pos,
+        text: entry.buffer,
+        color: ed.color,
+        size: ed.size,
+    });
+    ed.dirty = true;
+}
+
+fn color32(color: editor::Rgba) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3])
 }
 
 /// A clickable colour square; a white frame marks the active one. Returns
@@ -553,6 +724,9 @@ fn draw_preview(
                 egui::StrokeKind::Middle,
             );
         }
+        // Text is placed by clicking and typing, so there is no drag to preview.
+        // The open entry is drawn separately, next to the canvas image.
+        editor::Tool::Text => {}
     }
 }
 

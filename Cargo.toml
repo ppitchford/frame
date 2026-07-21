@@ -17,6 +17,10 @@ jiff = "0.2.32"
 memmap2 = "0.9.11"
 rustix = { version = "1.1.4", features = ["fs"] }
 serde_json = "1.0.150"
+# Glyph outlines for the text tool. Already in the tree via eframe → epaint →
+# harfrust, so declaring it directly compiles nothing new — but it does pin us to
+# a version eframe chose, which an eframe upgrade can desync.
+skrifa = "0.42.1"
 tiny-skia = "0.12.0"
 wayland-client = "0.31.14"
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }

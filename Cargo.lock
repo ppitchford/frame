@@ -811,6 +811,7 @@ dependencies = [
  "memmap2",
  "rustix 1.1.4",
  "serde_json",
+ "skrifa",
  "tiny-skia",
  "wayland-client",
  "wayland-protocols-wlr",
