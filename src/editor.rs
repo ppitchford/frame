@@ -154,10 +154,10 @@ pub fn decimate(path: &[Point], min_dist: f32) -> Vec<Point> {
     // The final sample is where the drag actually ended. If it fell inside
     // `min_dist` of the previous survivor it was just dropped, which would stop
     // the stroke short of the cursor — put it back.
-    if let (Some(&end), Some(&kept)) = (path.last(), out.last()) {
-        if kept != end {
-            out.push(end);
-        }
+    if let (Some(&end), Some(&kept)) = (path.last(), out.last())
+        && kept != end
+    {
+        out.push(end);
     }
     out
 }

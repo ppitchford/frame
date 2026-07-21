@@ -315,14 +315,13 @@ impl Dispatch<wl_output::WlOutput, u32> for Overlay {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_output::Event::Name { name } = event {
-            if let Some(info) = state
+        if let wl_output::Event::Name { name } = event
+            && let Some(info) = state
                 .outputs
                 .iter_mut()
                 .find(|o| o.registry_name == *registry_name)
-            {
-                info.name = Some(name);
-            }
+        {
+            info.name = Some(name);
         }
     }
 }
@@ -397,10 +396,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Overlay {
             state: WEnum::Value(wl_keyboard::KeyState::Pressed),
             ..
         } = event
+            && key == KEY_ESC
         {
-            if key == KEY_ESC {
-                state.running = false;
-            }
+            state.running = false;
         }
     }
 }

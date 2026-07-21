@@ -131,27 +131,26 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for CaptureApp {
     ) {
         use zwlr_screencopy_frame_v1::Event;
         match event {
+            // The guard is the "maybe several" above: the first advertised
+            // format wins and later `buffer` events are ignored. An unrecognised
+            // format falls through to `_` unrecorded, same as before.
             Event::Buffer {
-                format,
+                format: WEnum::Value(format),
                 width,
                 height,
                 stride,
-            } => {
-                if let WEnum::Value(format) = format {
-                    if state.pending_buffer.is_none() {
-                        state.pending_buffer = Some(BufferSpec {
-                            format,
-                            width,
-                            height,
-                            stride,
-                        });
-                    }
-                }
+            } if state.pending_buffer.is_none() => {
+                state.pending_buffer = Some(BufferSpec {
+                    format,
+                    width,
+                    height,
+                    stride,
+                });
             }
-            Event::Flags { flags } => {
-                if let WEnum::Value(flags) = flags {
-                    state.y_invert = flags.contains(zwlr_screencopy_frame_v1::Flags::YInvert);
-                }
+            Event::Flags {
+                flags: WEnum::Value(flags),
+            } => {
+                state.y_invert = flags.contains(zwlr_screencopy_frame_v1::Flags::YInvert);
             }
             Event::BufferDone => state.buffer_done = true,
             Event::Ready { .. } => state.frame_ready = true,
