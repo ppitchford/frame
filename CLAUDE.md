@@ -48,6 +48,7 @@ Versions confirmed against latest at implementation time.
 - **Wayland capture fallback:** `libwayshot` — retired 2026-07-16. It was contingent on the spike showing the raw approach miscalibrated; the spike passed and region capture shipped on the raw stack. Closed decision, not a live option.
 - **GUI framework (xdg-shell surfaces):** `eframe` (bundles egui + winit + wgpu).
 - **Software renderer (layer-shell surfaces):** `tiny-skia`.
+- **Text rendering:** `skrifa` for glyph outlines, plus **Atkinson Hyperlegible Regular** embedded from `assets/` (29 KB OTF, SIL OFL). `skrifa` was already a transitive dependency of `epaint`, so it compiles nothing new — but it is pinned to a version `eframe` chose, and an `eframe` upgrade can desync it. `tiny-skia` has no text API at all; glyphs arrive as outlines and are filled as ordinary paths.
 - **Clipboard:** `wl-clipboard-rs`. Do not enable the `native_lib` feature. Handles both interactive-overlay and headless-CLI copy contexts through the same code path. A clipboard offer dies with the process that makes it, and the crate serves it from a *thread*, not a forked helper — so `frame` re-execs a detached `__serve-clipboard` child to own the offer. Do not "simplify" that away; see the correction in `ROADMAP.md`.
 
 ## Environment
@@ -57,6 +58,7 @@ Versions confirmed against latest at implementation time.
 - **Compositor:** MangoWM (`mangowc` package, `mango` binary). Wayland, wlroots-based.
 - **Theme integration:** Rosé Pine dark/light. Configs symlinked under `~/.config/theme/`.
 - **Surrounding tooling:** Kitty terminal, Neovim 0.11, zsh + zinit, Starship prompt.
+- **`frame` is live, and `target/release` is load-bearing.** Since the cutover on 2026-07-21, the author's screenshot keys run this repo: `SUPER,Print` → `frame region`, `SUPER+SHIFT,Print` → `frame full`, `SUPER+ALT,Print` → `frame window`. `~/.local/bin/frame` is a **symlink** to `target/release/frame`, so a release rebuild takes effect on the next keypress — and **`cargo clean` breaks the author's screenshot keybindings.** The symptom is a dead key with no error and no obvious cause. `cargo clean` on the debug profile alone is safe; wiping `target/` is not. Bindings live in `~/.config/mango/config.conf`, outside this repo, alongside the `windowrule`.
 
 ## Anti-patterns
 
@@ -70,6 +72,7 @@ Do not, without an explicit request from the author:
 - Optimise before a spike or first implementation has demonstrated a real problem.
 - Introduce abstractions speculatively. Concrete first; generalise only when a second concrete use case appears.
 - Propose swapping any crate in the Locked Dependencies list without a demonstrated, concrete problem. If a locked dependency turns out to be wrong, surface the evidence and ask — do not silently reach for an alternative.
+- Run `cargo clean`, or suggest it to reclaim disk space. `target/release/frame` is symlinked onto the author's live screenshot keybindings — see Environment. Deleting it breaks them silently.
 
 ## Git
 
