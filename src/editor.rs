@@ -8,7 +8,8 @@
 
 use image::RgbaImage;
 use tiny_skia::{
-    FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Rect, Stroke, Transform,
+    FillRule, IntRect, IntSize, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint,
+    Rect, Stroke, Transform,
 };
 
 /// A point in base-image pixel space. `f32` so a drag can land sub-pixel; the
@@ -36,6 +37,12 @@ pub const HIGHLIGHT_ALPHA: u8 = 0x66;
 /// How far apart two freehand samples must be, in base-image pixels, to both
 /// survive `decimate`.
 const MIN_SAMPLE_DIST: f32 = 2.0;
+
+/// Blur strength, as a Gaussian sigma in base-image pixels. Absolute rather than
+/// scaled to the region: redaction is binary — either the text is unreadable or
+/// the op failed — and region, window and fullscreen captures are all cropped
+/// from the same physical grab, so a pixel means the same thing in each.
+const BLUR_SIGMA: f32 = 12.0;
 
 /// One annotation. Milestone 1 is the four two-point vector tools; milestone 2
 /// adds the freehand stroke and the highlighter. Text and the destructive ops
@@ -86,6 +93,13 @@ pub enum Op {
         b: Point,
         color: Rgba,
     },
+    /// Blur everything already drawn inside the region `a`–`b`. The first
+    /// destructive op: it carries no colour or width because it adds no ink of
+    /// its own, only names a region and a moment in the list.
+    Blur {
+        a: Point,
+        b: Point,
+    },
 }
 
 /// Which tool a drag produces. Kept separate from `Op` because the toolbar picks
@@ -98,6 +112,7 @@ pub enum Tool {
     Ellipse,
     Pencil,
     Highlight,
+    Blur,
 }
 
 impl Op {
@@ -122,6 +137,7 @@ impl Op {
             Tool::Rect => Op::Rect { a, b, color, width, filled },
             Tool::Ellipse => Op::Ellipse { a, b, color, width, filled },
             Tool::Highlight => Op::Highlight { a, b, color },
+            Tool::Blur => Op::Blur { a, b },
             Tool::Pencil => Op::Freehand {
                 points: decimate(path, MIN_SAMPLE_DIST),
                 color,
@@ -279,7 +295,68 @@ fn draw_op(pm: &mut Pixmap, op: &Op) {
                 );
             }
         }
+        Op::Blur { a, b } => draw_blur(pm, a, b),
     }
+}
+
+/// Blur whatever has already been drawn inside the region `a`–`b`.
+///
+/// This is the first op that *reads* the pixmap instead of only adding to it,
+/// and it is why list order has been load-bearing since milestone 1: `render`
+/// walks the visible prefix, so by the time this runs, `pm` already holds every
+/// earlier op composited onto the base. A blur therefore covers the annotations
+/// beneath it and leaves later ones sharp, with no machinery beyond reading the
+/// buffer it is handed.
+///
+/// `fast_blur` documents that it expects premultiplied alpha, which is exactly
+/// what a `Pixmap` stores — the two agree with no conversion. That is moot while
+/// the opacity invariant holds every alpha at 255, but the buffers would still
+/// line up if it ever stopped.
+///
+/// Every step is fallible and every failure is silent: a degenerate drag, or one
+/// entirely off-canvas, has nothing to blur, and returning is the correct
+/// outcome rather than an error to report.
+fn draw_blur(pm: &mut Pixmap, a: Point, b: Point) {
+    let Some(rect) = clamped_int_rect(a, b, pm.width(), pm.height()) else {
+        return;
+    };
+    let Some(region) = pm.clone_rect(rect) else {
+        return;
+    };
+    let (w, h) = (region.width(), region.height());
+
+    // `Pixmap` and `RgbaImage` are both tightly packed RGBA8, so the buffer
+    // moves between them without a pixel being touched.
+    let Some(src) = RgbaImage::from_raw(w, h, region.data().to_vec()) else {
+        return;
+    };
+    let blurred = image::imageops::fast_blur(&src, BLUR_SIGMA);
+    let Some(out) =
+        IntSize::from_wh(w, h).and_then(|size| Pixmap::from_vec(blurred.into_raw(), size))
+    else {
+        return;
+    };
+
+    pm.draw_pixmap(
+        rect.x(),
+        rect.y(),
+        out.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+}
+
+/// The integer pixel rectangle spanned by two drag corners, clipped to the
+/// canvas. `None` for a degenerate rectangle or one lying entirely outside it —
+/// `from_ltrb` rejects both, since either way there is no region to operate on.
+fn clamped_int_rect(a: Point, b: Point, w: u32, h: u32) -> Option<IntRect> {
+    // Outward rounding, so a drag never blurs less than it covered.
+    let left = a.x.min(b.x).floor().max(0.0) as i32;
+    let top = a.y.min(b.y).floor().max(0.0) as i32;
+    let right = (a.x.max(b.x).ceil() as i32).min(w as i32);
+    let bottom = (a.y.max(b.y).ceil() as i32).min(h as i32);
+    IntRect::from_ltrb(left, top, right, bottom)
 }
 
 /// A palette colour at a given opacity. The op carries the colour that was
@@ -606,6 +683,113 @@ mod tests {
             p[2] < 255 && p[2] > 0x77,
             "gold tint over white, got {p:?}"
         );
+    }
+
+    /// Half black, half white, split down the middle — a hard vertical edge for
+    /// a blur to soften.
+    fn split(w: u32, h: u32) -> RgbaImage {
+        RgbaImage::from_fn(w, h, |x, _| {
+            if x < w / 2 {
+                image::Rgba([0, 0, 0, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        })
+    }
+
+    fn blur(a: Point, b: Point) -> Op {
+        Op::Blur { a, b }
+    }
+
+    #[test]
+    fn a_blur_destroys_detail_inside_its_region() {
+        let mut d = Document::new(split(60, 60));
+        d.push(blur(Point::new(0.0, 0.0), Point::new(60.0, 60.0)));
+        let out = render(&d);
+        // Either side of the seam was pure black and pure white; after a blur
+        // both must have moved toward each other.
+        let left = out.get_pixel(28, 30)[0];
+        let right = out.get_pixel(31, 30)[0];
+        assert!(left > 20, "black side lifted by the blur, got {left}");
+        assert!(right < 235, "white side pulled down by the blur, got {right}");
+    }
+
+    #[test]
+    fn a_blur_is_bounded_by_its_rectangle() {
+        let base = split(60, 60);
+        let clean = render(&Document::new(base.clone()));
+
+        let mut d = Document::new(base);
+        d.push(blur(Point::new(20.0, 20.0), Point::new(40.0, 40.0)));
+        let out = render(&d);
+
+        // A pixel well outside the blurred rect is untouched, byte for byte.
+        assert_eq!(out.get_pixel(5, 5), clean.get_pixel(5, 5));
+        assert_eq!(out.get_pixel(55, 55), clean.get_pixel(55, 55));
+        // ...while the seam inside it moved.
+        assert_ne!(out.get_pixel(29, 30), clean.get_pixel(29, 30));
+    }
+
+    #[test]
+    fn a_blur_covers_earlier_ops_and_not_later_ones() {
+        // The milestone's real claim: destructive ops act on the prefix beneath
+        // them, so list position decides what they touch. Nothing tested this
+        // until blur existed to test it with.
+        let region = (Point::new(10.0, 10.0), Point::new(50.0, 50.0));
+        let mark = |p: Point| Op::Rect {
+            a: Point::new(p.x, p.y),
+            b: Point::new(p.x + 12.0, p.y + 12.0),
+            color: [255, 0, 0, 255],
+            width: 1.0,
+            filled: true,
+        };
+
+        // Same two ops, opposite order.
+        let mut under = Document::new(split(60, 60));
+        under.push(mark(Point::new(20.0, 20.0)));
+        under.push(blur(region.0, region.1));
+
+        let mut over = Document::new(split(60, 60));
+        over.push(blur(region.0, region.1));
+        over.push(mark(Point::new(20.0, 20.0)));
+
+        let blurred_mark = under_pixel(&render(&under));
+        let sharp_mark = under_pixel(&render(&over));
+
+        // Drawn after the blur, the rect keeps its exact fill colour.
+        assert_eq!(sharp_mark, [255, 0, 0], "op after the blur stays sharp");
+        // Drawn before it, the same rect has been smeared into its surroundings.
+        assert_ne!(blurred_mark, [255, 0, 0], "op before the blur is blurred");
+        assert!(
+            blurred_mark[0] < 255 || blurred_mark[1] > 0,
+            "the blurred rect bled with the background, got {blurred_mark:?}"
+        );
+    }
+
+    /// The RGB of the pixel at the centre of the test rect above.
+    fn under_pixel(img: &RgbaImage) -> [u8; 3] {
+        let p = img.get_pixel(26, 26);
+        [p[0], p[1], p[2]]
+    }
+
+    #[test]
+    fn a_degenerate_blur_renders_and_changes_nothing() {
+        let base = split(20, 20);
+        let clean = render(&Document::new(base.clone()));
+        let mut d = Document::new(base);
+        // Zero area, and a rectangle entirely off-canvas.
+        d.push(blur(Point::new(5.0, 5.0), Point::new(5.0, 5.0)));
+        d.push(blur(Point::new(90.0, 90.0), Point::new(120.0, 120.0)));
+        let out = render(&d);
+        assert_eq!(out.as_raw(), clean.as_raw(), "no-op blurs must not alter pixels");
+    }
+
+    #[test]
+    fn a_blur_leaves_the_output_fully_opaque() {
+        let mut d = Document::new(split(30, 30));
+        d.push(blur(Point::new(5.0, 5.0), Point::new(25.0, 25.0)));
+        let out = render(&d);
+        assert!(out.pixels().all(|px| px[3] == 255), "blur must not open holes");
     }
 
     #[test]

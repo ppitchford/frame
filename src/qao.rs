@@ -28,9 +28,15 @@ const ACTION_BAR_H: f32 = 64.0;
 /// Extra height the editor's two toolbar rows add above the canvas.
 const TOOLBAR_H: f32 = 76.0;
 
-/// Enough width for the editor's tool row — six tools, the fill checkbox and
+/// Enough width for the editor's tool row — seven tools, the fill checkbox and
 /// undo/redo — however narrow the capture was. The action row is far shorter.
-const MIN_WINDOW_W: f32 = 520.0;
+/// The row wraps rather than overflowing if this is ever outgrown.
+const MIN_WINDOW_W: f32 = 580.0;
+
+/// The drag outline for a destructive op. Fixed and neutral (Rosé Pine text):
+/// the palette does not apply to an op that adds no ink, and previewing the
+/// selected colour would imply that it did.
+const DESTRUCTIVE_PREVIEW: egui::Color32 = egui::Color32::from_rgb(0xe0, 0xde, 0xf4);
 
 /// The fixed annotation palette (Rosé Pine): love, gold, foam, iris, near-white
 /// text, near-black base. No free colour picker — this is the whole choice.
@@ -415,13 +421,16 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut EditorState) {
         ed.dirty = true;
     }
 
-    ui.horizontal(|ui| {
+    // Wrapped, so a tool row that outgrows the window folds onto a second line
+    // instead of running off the edge.
+    ui.horizontal_wrapped(|ui| {
         ui.selectable_value(&mut ed.tool, editor::Tool::Arrow, "Arrow");
         ui.selectable_value(&mut ed.tool, editor::Tool::Line, "Line");
         ui.selectable_value(&mut ed.tool, editor::Tool::Rect, "Rect");
         ui.selectable_value(&mut ed.tool, editor::Tool::Ellipse, "Oval");
         ui.selectable_value(&mut ed.tool, editor::Tool::Pencil, "Pencil");
         ui.selectable_value(&mut ed.tool, editor::Tool::Highlight, "Mark");
+        ui.selectable_value(&mut ed.tool, editor::Tool::Blur, "Blur");
         ui.separator();
         // Fill only means something for the tools with an interior. The
         // highlighter is always filled and the pencil never is, so neither is
@@ -532,6 +541,17 @@ fn draw_preview(
                 editor::HIGHLIGHT_ALPHA,
             );
             painter.rect_filled(egui::Rect::from_two_pos(a, b), 0.0, tint);
+        }
+        // A marquee, not a stroke: fixed hairline width, no palette colour, and
+        // no live blur — running the filter every frame would be the first thing
+        // in this editor to cost real time. The effect lands on release.
+        editor::Tool::Blur => {
+            painter.rect_stroke(
+                egui::Rect::from_two_pos(a, b),
+                0.0,
+                egui::Stroke::new(1.0, DESTRUCTIVE_PREVIEW),
+                egui::StrokeKind::Middle,
+            );
         }
     }
 }
