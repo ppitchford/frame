@@ -121,7 +121,8 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 - **The dependency runs the opposite way to how it was written.** This section long read as though the cutover were the last thing, gated on everything else. But crop's tier was deliberately parked pending *real use*, and real use requires the bindings to move — so the cutover was gating the crop decision, not the other way round. Moving it early is what makes that decision answerable.
 - The old flow goes capture → *straight* into the editor, with no preview step. The Quick Access Overlay inserts one, and now that the editor exists behind the Annotate button, both paths are real: preview-then-annotate versus straight-to-editor. **Still unsettled, and now measurable:** whether the preview step earns its place is exactly what daily use will answer.
 - **Still open after the cutover:** whether crop is ever missed; whether the QAO preview step earns its keep; and the dual-display focus-following, unverified until a second monitor exists.
-- Retire `~/.local/bin/screenshot` only after the flow has survived real use. It is untouched as of 2026-07-21.
+- **Initial use on the real bindings confirmed clean 2026-07-21** — all three modes fire from their keys after a `SUPER+r` reload. That is a smoke test, not the standard for retiring anything.
+- Retire `~/.local/bin/screenshot` only after the flow has survived real use, meaning days of ordinary screenshots rather than a deliberate pass. It is untouched as of 2026-07-21.
 
 ## Pre-v1 Spike: Scrolling Capture Feasibility
 
