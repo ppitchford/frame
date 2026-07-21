@@ -379,6 +379,26 @@ impl OutlinePen for GlyphPen {
     }
 }
 
+/// Vertical distance from the top of a line box to the visual centre of the text
+/// it holds, at `size`.
+///
+/// The I-beam pointer's hotspot is its *middle*, so a click has to be lifted by
+/// this much for text to land where the cursor appeared to point. Anchoring the
+/// line-box top directly at the click puts the text about half a line too low —
+/// which is precisely what it did before this existed. `Op::Text::pos` keeps its
+/// meaning as the line-box top; this is purely how a click maps onto it.
+pub fn text_center_offset(size: f32) -> f32 {
+    let Ok(font) = FontRef::new(FONT) else {
+        // Half the em is a serviceable stand-in if the font ever fails to parse.
+        return size * 0.5;
+    };
+    let m = font.metrics(Size::new(size), LocationRef::default());
+    // `descent` is documented as the distance from the baseline to the bottom of
+    // the alignment box without stating a sign. Taking the magnitude means the
+    // convention cannot matter either way.
+    (m.ascent + m.descent.abs()) * 0.5
+}
+
 /// Draw one line of `text` with its line box starting at `pos`.
 ///
 /// Glyphs are filled paths, not a rasterised mask — the same `fill` every other
@@ -1009,6 +1029,21 @@ mod tests {
             spaced.2,
             tight.2
         );
+    }
+
+    #[test]
+    fn the_text_centre_offset_lands_inside_the_line_box() {
+        // Pins the descent sign convention: if `descent` were added with its raw
+        // sign and turned out negative, the offset would collapse toward the
+        // ascent alone and the text would sit high instead of low. Either way it
+        // must stay a sane fraction of the size.
+        for size in [12.0, 32.0, 100.0] {
+            let offset = text_center_offset(size);
+            assert!(
+                offset > size * 0.3 && offset < size * 0.8,
+                "offset {offset} is a plausible half-line for size {size}"
+            );
+        }
     }
 
     #[test]

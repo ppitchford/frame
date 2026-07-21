@@ -318,6 +318,15 @@ impl Qao {
             // release commits an op.
             let (rect, response) =
                 ui.allocate_exact_size(preview, egui::Sense::click_and_drag());
+
+            // The text tool places a caret rather than dragging, so the pointer
+            // should say so over the canvas. Scoped to hover, so the toolbar
+            // keeps a normal arrow.
+            let response = if ed.tool == editor::Tool::Text {
+                response.on_hover_cursor(egui::CursorIcon::Text)
+            } else {
+                response
+            };
             let painter = ui.painter_at(rect);
             painter.image(
                 ed.texture.id(),
@@ -350,8 +359,13 @@ impl Qao {
                 && let Some(p) = response.interact_pointer_pos()
             {
                 commit_text(ed);
+                // Lift the line box so the text straddles the click rather than
+                // hanging below it — the I-beam points with its middle, not its
+                // top. This also centres the caret on the cursor.
+                let mut pos = to_image(p);
+                pos.y -= editor::text_center_offset(ed.size);
                 ed.typing = Some(TextEntry {
-                    pos: to_image(p),
+                    pos,
                     buffer: String::new(),
                 });
             }
