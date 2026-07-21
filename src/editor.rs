@@ -28,9 +28,22 @@ impl Point {
 /// Straight RGBA, one byte per channel — the same convention as `RgbaImage`.
 pub type Rgba = [u8; 4];
 
-/// One annotation. Milestone 1 is the four two-point vector tools; freehand,
-/// text, and the destructive ops join the enum in later milestones.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// The highlighter's opacity. Fixed, like the palette: those two constants are
+/// the whole colour choice, and neither is a toolbar control. The op stores the
+/// colour that was picked; this alpha is substituted in at render.
+pub const HIGHLIGHT_ALPHA: u8 = 0x66;
+
+/// How far apart two freehand samples must be, in base-image pixels, to both
+/// survive `decimate`.
+const MIN_SAMPLE_DIST: f32 = 2.0;
+
+/// One annotation. Milestone 1 is the four two-point vector tools; milestone 2
+/// adds the freehand stroke and the highlighter. Text and the destructive ops
+/// join the enum in later milestones.
+///
+/// `Clone` but not `Copy`: `Freehand` carries a variable-length point list, so
+/// the enum can no longer be a bitwise copy. Nothing here required `Copy`.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Op {
     Arrow {
         a: Point,
@@ -58,6 +71,21 @@ pub enum Op {
         width: f32,
         filled: bool,
     },
+    /// A drawn stroke. The points are the drag as sampled, minus the duplicates
+    /// `decimate` removed; the curve through them is `render`'s business, not the
+    /// document's.
+    Freehand {
+        points: Vec<Point>,
+        color: Rgba,
+        width: f32,
+    },
+    /// A translucent block over the region `a`–`b`. No `width` — it is a fill
+    /// with no outline — and no `filled`, since it is nothing else.
+    Highlight {
+        a: Point,
+        b: Point,
+        color: Rgba,
+    },
 }
 
 /// Which tool a drag produces. Kept separate from `Op` because the toolbar picks
@@ -68,20 +96,75 @@ pub enum Tool {
     Line,
     Rect,
     Ellipse,
+    Pencil,
+    Highlight,
 }
 
 impl Op {
-    /// Build the op a completed drag produces: `a`→`b` in image pixels, with the
-    /// toolbar's current colour, width, and fill. `filled` is ignored by the
-    /// tools that have no interior.
-    pub fn from_drag(tool: Tool, a: Point, b: Point, color: Rgba, width: f32, filled: bool) -> Op {
-        match tool {
+    /// Build the op a completed drag produces from the drag's sampled path, in
+    /// image pixels, with the toolbar's current colour, width, and fill.
+    ///
+    /// A drag is always a point sequence; the tools differ in how much of it they
+    /// consume. `Pencil` takes the whole path, the rest take its first and last
+    /// point and ignore the middle. `filled` is ignored by the tools that have no
+    /// interior. `None` for an empty path, which has no geometry to describe.
+    pub fn from_drag(
+        tool: Tool,
+        path: &[Point],
+        color: Rgba,
+        width: f32,
+        filled: bool,
+    ) -> Option<Op> {
+        let (&a, &b) = (path.first()?, path.last()?);
+        Some(match tool {
             Tool::Arrow => Op::Arrow { a, b, color, width },
             Tool::Line => Op::Line { a, b, color, width },
             Tool::Rect => Op::Rect { a, b, color, width, filled },
             Tool::Ellipse => Op::Ellipse { a, b, color, width, filled },
+            Tool::Highlight => Op::Highlight { a, b, color },
+            Tool::Pencil => Op::Freehand {
+                points: decimate(path, MIN_SAMPLE_DIST),
+                color,
+                width,
+            },
+        })
+    }
+}
+
+/// Drop samples closer than `min_dist` to the last one kept. A pointer sampled
+/// at 120 Hz oversamples badly — consecutive frames can land on the same pixel —
+/// and those duplicates are pure jitter for `smooth_path` to bend around. The
+/// first and last points always survive, so the stroke keeps the exact endpoints
+/// the drag had.
+///
+/// This is baked into the stored op, unlike smoothing: it removes sampling noise
+/// rather than expressing a curve, so nothing later would want the duplicates
+/// back.
+pub fn decimate(path: &[Point], min_dist: f32) -> Vec<Point> {
+    let mut out: Vec<Point> = Vec::new();
+    for &p in path {
+        let keep = match out.last() {
+            Some(&last) => dist(last, p) >= min_dist,
+            None => true,
+        };
+        if keep {
+            out.push(p);
         }
     }
+    // The final sample is where the drag actually ended. If it fell inside
+    // `min_dist` of the previous survivor it was just dropped, which would stop
+    // the stroke short of the cursor — put it back.
+    if let (Some(&end), Some(&kept)) = (path.last(), out.last()) {
+        if kept != end {
+            out.push(end);
+        }
+    }
+    out
+}
+
+fn dist(a: Point, b: Point) -> f32 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    (dx * dx + dy * dy).sqrt()
 }
 
 /// The edit state: an immutable base image plus the op list and its pointer.
@@ -180,7 +263,73 @@ fn draw_op(pm: &mut Pixmap, op: &Op) {
                 stroke(pm, &path, width, color);
             }
         }
+        // `ref points` because `Op` is not `Copy` — the scalars still bind by
+        // value, only the list has to borrow.
+        Op::Freehand { ref points, color, width } => {
+            if let Some(path) = smooth_path(points) {
+                stroke(pm, &path, width, color);
+            }
+        }
+        Op::Highlight { a, b, color } => {
+            if let Some(rect) = norm_rect(a, b) {
+                fill(
+                    pm,
+                    &PathBuilder::from_rect(rect),
+                    with_alpha(color, HIGHLIGHT_ALPHA),
+                );
+            }
+        }
     }
+}
+
+/// A palette colour at a given opacity. The op carries the colour that was
+/// picked; the tool's alpha is applied here, so the document never stores a
+/// derived value.
+pub fn with_alpha(color: Rgba, alpha: u8) -> Rgba {
+    [color[0], color[1], color[2], alpha]
+}
+
+/// One smoothed path through `path`. Each interior sample becomes a quadratic
+/// control point and the curve passes through the midpoints between consecutive
+/// samples — the standard midpoint-quadratic walk. It rounds the corners off a
+/// sampled drag without needing tangent estimation, and the curve never swings
+/// wide of the points that were actually drawn.
+///
+/// One path for the whole stroke, not one per segment: the curves have to span
+/// segment boundaries to smooth anything, and a single path lets the stroker
+/// resolve every join once.
+fn smooth_path(path: &[Point]) -> Option<Path> {
+    let mut pb = PathBuilder::new();
+    match path {
+        [] => return None,
+        // A press that never moved. A zero-length segment under a round cap is
+        // the dot.
+        [p] => {
+            pb.move_to(p.x, p.y);
+            pb.line_to(p.x, p.y);
+        }
+        [a, b] => {
+            pb.move_to(a.x, a.y);
+            pb.line_to(b.x, b.y);
+        }
+        [first, rest @ ..] => {
+            pb.move_to(first.x, first.y);
+            for pair in rest.windows(2) {
+                let (ctrl, next) = (pair[0], pair[1]);
+                pb.quad_to(
+                    ctrl.x,
+                    ctrl.y,
+                    (ctrl.x + next.x) / 2.0,
+                    (ctrl.y + next.y) / 2.0,
+                );
+            }
+            // The walk above stops at the midpoint before the final sample; run
+            // out to it so the stroke ends where the drag did.
+            let end = rest[rest.len() - 1];
+            pb.line_to(end.x, end.y);
+        }
+    }
+    pb.finish()
 }
 
 /// A solid-colour, anti-aliased paint. `'static` because a solid colour carries
@@ -361,5 +510,120 @@ mod tests {
         // A pixel inside the red rect but outside the green one stays red.
         let ring = out.get_pixel(1, 1);
         assert!(ring[0] > 200 && ring[1] < 64, "outer ring still red, got {ring:?}");
+    }
+
+    #[test]
+    fn decimate_drops_dense_samples_but_keeps_both_endpoints() {
+        let path = [
+            Point::new(0.0, 0.0),
+            Point::new(0.5, 0.0),  // within 2.0 of the first — dropped
+            Point::new(1.0, 0.0),  // still within 2.0 of the first — dropped
+            Point::new(10.0, 0.0), // far enough — kept
+            Point::new(10.2, 0.0), // too close to keep, but it is where the drag
+                                   // ended, so it is restored
+        ];
+        let out = decimate(&path, 2.0);
+        assert_eq!(
+            out,
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 0.0),
+                Point::new(10.2, 0.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn decimate_of_an_empty_path_is_empty() {
+        assert!(decimate(&[], 2.0).is_empty());
+    }
+
+    fn black(w: u32, h: u32) -> RgbaImage {
+        RgbaImage::from_pixel(w, h, image::Rgba([0, 0, 0, 255]))
+    }
+
+    #[test]
+    fn freehand_renders_ink_along_its_path() {
+        let mut d = Document::new(black(40, 40));
+        d.push(Op::Freehand {
+            points: vec![
+                Point::new(5.0, 20.0),
+                Point::new(20.0, 20.0),
+                Point::new(35.0, 20.0),
+            ],
+            color: [255, 0, 0, 255],
+            width: 4.0,
+        });
+        let out = render(&d);
+        let on = out.get_pixel(20, 20);
+        assert!(on[0] > 200, "ink on the stroke, got {on:?}");
+        let off = out.get_pixel(20, 2);
+        assert!(off[0] < 64, "no ink far from the stroke, got {off:?}");
+    }
+
+    #[test]
+    fn a_one_point_freehand_stroke_renders_a_dot() {
+        let mut d = Document::new(black(20, 20));
+        d.push(Op::Freehand {
+            points: vec![Point::new(10.0, 10.0)],
+            color: [255, 0, 0, 255],
+            width: 6.0,
+        });
+        let out = render(&d);
+        let center = out.get_pixel(10, 10);
+        assert!(center[0] > 200, "a click with no drag still marks, got {center:?}");
+    }
+
+    #[test]
+    fn a_two_point_freehand_stroke_renders_a_segment() {
+        let mut d = Document::new(black(20, 20));
+        d.push(Op::Freehand {
+            points: vec![Point::new(4.0, 10.0), Point::new(16.0, 10.0)],
+            color: [255, 0, 0, 255],
+            width: 4.0,
+        });
+        let out = render(&d);
+        let mid = out.get_pixel(10, 10);
+        assert!(mid[0] > 200, "ink along the segment, got {mid:?}");
+    }
+
+    #[test]
+    fn a_highlight_tints_the_base_without_replacing_it() {
+        // White base, gold highlight: the tint is unambiguous in the blue channel.
+        let base = RgbaImage::from_pixel(10, 10, image::Rgba([255, 255, 255, 255]));
+        let mut d = Document::new(base);
+        d.push(Op::Highlight {
+            a: Point::new(0.0, 0.0),
+            b: Point::new(10.0, 10.0),
+            color: [0xf6, 0xc1, 0x77, 0xff],
+        });
+        let out = render(&d);
+        let p = out.get_pixel(5, 5);
+        // Blue falls toward gold's 0x77 without reaching it — the white base is
+        // still showing through, which is what makes it a highlighter and not a
+        // rectangle.
+        assert!(
+            p[2] < 255 && p[2] > 0x77,
+            "gold tint over white, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn a_translucent_op_leaves_the_output_fully_opaque() {
+        // The invariant `render` depends on: it copies tiny-skia's premultiplied
+        // buffer straight into a straight-RGBA image, which is only valid because
+        // every pixel is opaque. A translucent op is the first thing that could
+        // have broken it — blending over an opaque base must still yield opaque.
+        let mut d = Document::new(black(10, 10));
+        d.push(Op::Highlight {
+            a: Point::new(2.0, 2.0),
+            b: Point::new(8.0, 8.0),
+            color: [0xf6, 0xc1, 0x77, 0xff],
+        });
+        let out = render(&d);
+        assert!(
+            out.pixels().all(|px| px[3] == 255),
+            "a translucent op must not open holes in the capture"
+        );
     }
 }

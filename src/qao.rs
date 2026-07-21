@@ -28,8 +28,9 @@ const ACTION_BAR_H: f32 = 64.0;
 /// Extra height the editor's two toolbar rows add above the canvas.
 const TOOLBAR_H: f32 = 76.0;
 
-/// Enough width for four buttons, however narrow the capture was.
-const MIN_WINDOW_W: f32 = 340.0;
+/// Enough width for the editor's tool row — six tools, the fill checkbox and
+/// undo/redo — however narrow the capture was. The action row is far shorter.
+const MIN_WINDOW_W: f32 = 520.0;
 
 /// The fixed annotation palette (Rosé Pine): love, gold, foam, iris, near-white
 /// text, near-black base. No free colour picker — this is the whole choice.
@@ -143,8 +144,10 @@ struct EditorState {
     color: editor::Rgba,
     width: f32,
     filled: bool,
-    /// Drag anchor in base-image pixels, present only mid-drag.
-    drag: Option<editor::Point>,
+    /// The in-progress drag, sampled in base-image pixels, present only mid-drag.
+    /// A drag is always a point sequence — the pencil consumes all of it, the
+    /// two-point tools read only its ends.
+    drag: Option<Vec<editor::Point>>,
     /// The flattened render, downscaled for the GPU. Rebuilt when `dirty`.
     texture: egui::TextureHandle,
     dirty: bool,
@@ -299,39 +302,34 @@ impl Qao {
             };
 
             if response.drag_started() {
-                ed.drag = response.interact_pointer_pos().map(to_image);
+                ed.drag = Some(Vec::new());
+            }
+
+            // Sample every frame the drag is live. The pencil needs the whole
+            // path; the two-point tools only ever read its ends, for which the
+            // newest sample is the cursor.
+            if let (Some(path), Some(cursor)) = (ed.drag.as_mut(), response.interact_pointer_pos())
+            {
+                path.push(to_image(cursor));
             }
 
             // Live preview via the painter — feedback only. The committed pixels
             // still come from `render()` walking the op list in order.
-            if let (Some(anchor), Some(cursor)) = (ed.drag, response.interact_pointer_pos()) {
+            if let Some(path) = ed.drag.as_ref() {
+                let screen: Vec<egui::Pos2> = path.iter().copied().map(to_screen).collect();
                 let disp_width = ed.width * rect.width() / img_w;
-                draw_preview(
-                    &painter,
-                    ed.tool,
-                    to_screen(anchor),
-                    cursor,
-                    ed.color,
-                    disp_width,
-                    ed.filled,
-                );
+                draw_preview(&painter, ed.tool, &screen, ed.color, disp_width, ed.filled);
             }
 
-            if response.drag_stopped() {
-                if let (Some(anchor), Some(cursor)) =
-                    (ed.drag.take(), response.interact_pointer_pos())
-                {
-                    let op = editor::Op::from_drag(
-                        ed.tool,
-                        anchor,
-                        to_image(cursor),
-                        ed.color,
-                        ed.width,
-                        ed.filled,
-                    );
-                    ed.doc.push(op);
-                    ed.dirty = true;
-                }
+            // `from_drag` yields `None` for a drag with no samples at all, which
+            // describes no geometry and should not enter the history.
+            if response.drag_stopped()
+                && let Some(path) = ed.drag.take()
+                && let Some(op) =
+                    editor::Op::from_drag(ed.tool, &path, ed.color, ed.width, ed.filled)
+            {
+                ed.doc.push(op);
+                ed.dirty = true;
             }
 
             // Re-render only on an edit, never per frame.
@@ -422,8 +420,12 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut EditorState) {
         ui.selectable_value(&mut ed.tool, editor::Tool::Line, "Line");
         ui.selectable_value(&mut ed.tool, editor::Tool::Rect, "Rect");
         ui.selectable_value(&mut ed.tool, editor::Tool::Ellipse, "Oval");
+        ui.selectable_value(&mut ed.tool, editor::Tool::Pencil, "Pencil");
+        ui.selectable_value(&mut ed.tool, editor::Tool::Highlight, "Mark");
         ui.separator();
-        // Fill only means something for the tools with an interior.
+        // Fill only means something for the tools with an interior. The
+        // highlighter is always filled and the pencil never is, so neither is
+        // fillable in the toolbar's sense.
         let fillable = matches!(ed.tool, editor::Tool::Rect | editor::Tool::Ellipse);
         ui.add_enabled(fillable, egui::Checkbox::new(&mut ed.filled, "Fill"));
         ui.separator();
@@ -479,18 +481,24 @@ fn color_swatch(ui: &mut egui::Ui, color: editor::Rgba, selected: bool) -> bool 
     response.clicked()
 }
 
-/// Paint the in-progress op in screen space with the egui painter. Fidelity to
-/// the committed render matters less than responsiveness — this is drag feedback,
-/// redrawn every frame, never saved.
+/// Paint the in-progress op in screen space with the egui painter, from the drag
+/// sampled so far. Fidelity to the committed render matters less than
+/// responsiveness — this is drag feedback, redrawn every frame, never saved. The
+/// pencil preview is the raw polyline, so a stroke visibly settles onto its
+/// smoothed curve when it commits.
 fn draw_preview(
     painter: &egui::Painter,
     tool: editor::Tool,
-    a: egui::Pos2,
-    b: egui::Pos2,
+    path: &[egui::Pos2],
     color: editor::Rgba,
     width: f32,
     filled: bool,
 ) {
+    // The same split `Op::from_drag` makes: the two-point tools span the drag,
+    // the pencil follows every sample.
+    let (Some(&a), Some(&b)) = (path.first(), path.last()) else {
+        return;
+    };
     let col = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
     let stroke = egui::Stroke::new(width.max(1.0), col);
     match tool {
@@ -512,6 +520,18 @@ fn draw_preview(
             } else {
                 painter.add(egui::Shape::closed_line(pts, stroke));
             }
+        }
+        editor::Tool::Pencil => {
+            painter.add(egui::Shape::line(path.to_vec(), stroke));
+        }
+        editor::Tool::Highlight => {
+            let tint = egui::Color32::from_rgba_unmultiplied(
+                color[0],
+                color[1],
+                color[2],
+                editor::HIGHLIGHT_ALPHA,
+            );
+            painter.rect_filled(egui::Rect::from_two_pos(a, b), 0.0, tint);
         }
     }
 }
