@@ -111,14 +111,17 @@ A Wayland-native screenshot and annotation tool for MangoWM. Built for a single 
 
 ### Cutover — deliberately last
 
-**Deferred 2026-07-16**, to be done once the rest of Tier 1 is complete. The old flow stays intact until `frame` actually covers it; nothing here is a preference call to be re-litigated each session.
+**Deferred 2026-07-16, done 2026-07-21.** Tool parity with `satty` closed at editor milestone 4, and the bindings moved the same day. The old flow stays on disk until `frame` has survived real use.
 
-- Repoint both `~/.config/mango/config.conf` bindings (lines 205–206) from `~/.local/bin/screenshot` to `frame`. Like the windowrule, they live **outside this repo**:
-  - `SUPER,Print` → `screenshot region` → `grim -g "$(slurp)" - | satty --filename -`
-  - `SUPER+SHIFT,Print` → `screenshot full` → `grim - | satty --filename -`
-- **No longer blocked on fullscreen capture** (implemented 2026-07-17). `frame` now covers `region` and `full` — and, since 2026-07-20, `window`, which the old script never had and which therefore has no binding to inherit. The two existing bindings *could* move together rather than splitting the workflow across two tools. The remaining gate is the annotation editor below: milestones 1–4 shipped 2026-07-20/21, covering the two-point vector tools, freehand, highlighter, blur and text. **Tool parity with `satty` is closed.** What remains before the bindings move is crop — whose tier is deliberately unsettled, precisely because this flow has not been used in anger yet — and, once the external monitor is in daily use, the dual-display focus-following that is still unverified.
-- The old flow goes capture → *straight* into the editor, with no preview step. The Quick Access Overlay inserts one, and now that the editor exists behind the Annotate button, both paths are real: preview-then-annotate versus straight-to-editor. Whether the preview step earns its place is a live question to settle during the cutover, against actual use.
-- Retire `~/.local/bin/screenshot` only after both bindings are moved and the flow has survived real use.
+- **The bindings now point at `frame`** (`~/.config/mango/config.conf`, and like the windowrule they live **outside this repo**):
+  - `SUPER,Print` → `frame region`
+  - `SUPER+SHIFT,Print` → `frame full`
+  - `SUPER+ALT,Print` → `frame window` — **new.** The old script had no such mode, so there was no binding to inherit; without one the window picker was reachable only by typing the command, which meant never.
+- **The cutover needed an install step the earlier plan never mentioned.** `frame` was not on `$PATH` — it existed only at `target/release/frame`, while this section had said "repoint the bindings to `frame`" as though that were enough. `~/.local/bin/frame` is now a **symlink** to the release build, so a `cargo build --release` takes effect on the next keypress with no install step. The cost is recorded where it will be needed: **`cargo clean` breaks the Print keys**, and the failure looks like a dead keybinding with no obvious cause. A comment in `config.conf` says so at the point of use.
+- **The dependency runs the opposite way to how it was written.** This section long read as though the cutover were the last thing, gated on everything else. But crop's tier was deliberately parked pending *real use*, and real use requires the bindings to move — so the cutover was gating the crop decision, not the other way round. Moving it early is what makes that decision answerable.
+- The old flow goes capture → *straight* into the editor, with no preview step. The Quick Access Overlay inserts one, and now that the editor exists behind the Annotate button, both paths are real: preview-then-annotate versus straight-to-editor. **Still unsettled, and now measurable:** whether the preview step earns its place is exactly what daily use will answer.
+- **Still open after the cutover:** whether crop is ever missed; whether the QAO preview step earns its keep; and the dual-display focus-following, unverified until a second monitor exists.
+- Retire `~/.local/bin/screenshot` only after the flow has survived real use. It is untouched as of 2026-07-21.
 
 ## Pre-v1 Spike: Scrolling Capture Feasibility
 
