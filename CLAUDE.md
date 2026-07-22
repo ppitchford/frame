@@ -4,7 +4,7 @@ Working agreement for Claude when contributing to `frame`.
 
 ## Project
 
-`frame` is a Wayland-native screenshot and annotation tool for MangoWM. Single user, single static binary, Rust. Replaces `grim` + `slurp` + `satty` and closes the Wayland scrolling-capture gap. Full scope and roadmap: see `ROADMAP.md`.
+`frame` is a Wayland-native screenshot and annotation tool for MangoWM. Single user, single self-contained binary, Rust. Replaces `grim` + `slurp` + `satty` and closes the Wayland scrolling-capture gap. Full scope and roadmap: see `ROADMAP.md`.
 
 ## Working Agreement
 
@@ -29,7 +29,7 @@ Working agreement for Claude when contributing to `frame`.
 
 Authoritative source: `ROADMAP.md`. Repeated here so a fresh session can be productive without re-reading the full roadmap.
 
-- **Language:** Rust. Output is a single static binary. GTK is eliminated by this requirement; suggest no GUI framework that doesn't satisfy it.
+- **Language:** Rust. Output is a single self-contained binary: one executable, no plugin directories, no interpreter, requiring no system library Void does not already provide. It is **not** statically linked — see `ROADMAP.md` for exactly what it links. GTK is eliminated by this requirement; suggest no GUI framework that doesn't satisfy it.
 - **Output:** PNG, plus optional sidecar JSON for editable annotations. JSON is human-readable; readability beats file size for BYOS debugging.
 - **Interactive-mode coordination:** Unix socket at `$XDG_RUNTIME_DIR/frame.sock`. A second `frame` invocation signals the running instance (e.g., scroll-capture stop). Designed as a small command bus, not a one-off — reusable for any future modal capture. **Implemented 2026-07-21** (`sock.rs`), carrying exactly one command (`stop`) because only one has a caller. Failure to connect is not an error: it is how a caller learns no session is running.
 - **Annotation editor model:** ordered operation list with a pointer.
@@ -64,7 +64,7 @@ Versions confirmed against latest at implementation time.
 
 Do not, without an explicit request from the author:
 
-- Suggest GTK or any GUI framework that can't produce a static binary.
+- Suggest GTK or any GUI framework that can't ship as a single self-contained binary.
 - Pull in heavyweight image-processing dependencies (OpenCV, ImageMagick bindings, anything requiring system libraries).
 - Add configuration options, CLI flags, or environment variables the author hasn't asked for.
 - Write README sections aimed at "users" or "contributors."
