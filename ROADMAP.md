@@ -171,6 +171,15 @@ Wayland has no compositor primitive for capturing offscreen surface content. The
 
 Re-evaluated once Tier 1 is stable.
 
+**Tier 1 is stable as of 2026-07-22, so this gate is open.** Every Tier 1 item has shipped, the cutover landed 2026-07-21, and `frame` has run the author's Print keys since without a regression — including after the rustc 1.96.0 → 1.97.1 rebuild on 2026-07-22, which was verified against the live keys. These entries therefore stop meaning "not yet" and start meaning "not chosen."
+
+Two Tier 1 questions remain open and are explicitly **not** blockers on this section:
+
+- **Dual-display focus-following** — blocked on hardware, not on work. See Capture.
+- **Whether crop is ever missed** — waiting on accumulated use, not on a decision. See Cutover.
+
+**The concrete first move is the Quick Access Overlay's Rosé Pine theming, immediately below.** It is the only candidate in this section that is simultaneously author-requested, specified rather than a mood, and verified as a real gap in the code. Everything else here is unstarted by choice.
+
 - **Quick Access Overlay visual refinement — author-requested 2026-07-21**, after use confirmed the overlay itself earns its place. The *function* is settled; this is about how it looks.
   - **One concrete gap, verified rather than assumed:** `qao.rs` never calls `set_visuals` or `set_style`, so the overlay renders in egui's stock dark theme — while the annotation palette is Rosé Pine and so is every other surface the author looks at. The theme integration stops at the palette. That is the obvious first move and probably cheap.
   - **The rest has no specifics yet, and this entry should not pretend otherwise.** "Refine the UI" is the kind of line that serves none of this document's four readers. When particular irritations show up in use — spacing, button placement, the status line, the tall-stitch preview sliver — record them *here*, specifically, rather than letting them accumulate as a mood.
