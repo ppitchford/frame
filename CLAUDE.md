@@ -57,7 +57,8 @@ Versions confirmed against latest at implementation time.
 - **Hardware:** Framework 13 AMD (Ryzen AI 7 350), 2880×1920 @ 120 Hz, scale 2.0.
 - **Compositor:** MangoWM (`mangowc` package, `mango` binary). Wayland, wlroots-based.
 - **Theme integration:** Rosé Pine dark/light. Configs symlinked under `~/.config/theme/`.
-- **Surrounding tooling:** Kitty terminal, Neovim 0.11, zsh + zinit, Starship prompt.
+- **Surrounding tooling:** Kitty terminal, Neovim 0.12, zsh + zinit, Starship prompt.
+- **Rust toolchain comes from `xbps`, not `rustup`.** `rust`, `rust-std`, `cargo`, `rust-src`, and `rust-analyzer` are all xbps packages and update with `xbps-install -Su`. `rustup` is deliberately not installed, and `mise` (which manages go/node/python here) deliberately does not manage Rust. Do not propose either without a demonstrated problem. Note that `rust-src` is version-locked to `rust`, so installing it can silently upgrade the compiler.
 - **`frame` is live, and `target/release` is load-bearing.** Since the cutover on 2026-07-21, the author's screenshot keys run this repo: `SUPER,Print` → `frame region`, `SUPER+SHIFT,Print` → `frame full`, `SUPER+ALT,Print` → `frame window`, `SUPER+CTRL,Print` → `frame scroll` (a toggle: press to start, press again to stop). `~/.local/bin/frame` is a **symlink** to `target/release/frame`, so a release rebuild takes effect on the next keypress — and **`cargo clean` breaks the author's screenshot keybindings.** The symptom is a dead key with no error and no obvious cause. `cargo clean` on the debug profile alone is safe; wiping `target/` is not. Bindings live in `~/.config/mango/config.conf`, outside this repo, alongside the `windowrule`.
 
 ## Anti-patterns
