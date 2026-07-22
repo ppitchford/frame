@@ -31,7 +31,7 @@ Authoritative source: `ROADMAP.md`. Repeated here so a fresh session can be prod
 
 - **Language:** Rust. Output is a single static binary. GTK is eliminated by this requirement; suggest no GUI framework that doesn't satisfy it.
 - **Output:** PNG, plus optional sidecar JSON for editable annotations. JSON is human-readable; readability beats file size for BYOS debugging.
-- **Interactive-mode coordination:** Unix socket at `$XDG_RUNTIME_DIR/frame.sock`. A second `frame` invocation signals the running instance (e.g., scroll-capture stop). Designed as a small command bus, not a one-off — reusable for any future modal capture.
+- **Interactive-mode coordination:** Unix socket at `$XDG_RUNTIME_DIR/frame.sock`. A second `frame` invocation signals the running instance (e.g., scroll-capture stop). Designed as a small command bus, not a one-off — reusable for any future modal capture. **Implemented 2026-07-21** (`sock.rs`), carrying exactly one command (`stop`) because only one has a caller. Failure to connect is not an error: it is how a caller learns no session is running.
 - **Annotation editor model:** ordered operation list with a pointer.
   - Undo/redo move the pointer.
   - New ops after undo truncate the list past the pointer.
@@ -58,7 +58,7 @@ Versions confirmed against latest at implementation time.
 - **Compositor:** MangoWM (`mangowc` package, `mango` binary). Wayland, wlroots-based.
 - **Theme integration:** Rosé Pine dark/light. Configs symlinked under `~/.config/theme/`.
 - **Surrounding tooling:** Kitty terminal, Neovim 0.11, zsh + zinit, Starship prompt.
-- **`frame` is live, and `target/release` is load-bearing.** Since the cutover on 2026-07-21, the author's screenshot keys run this repo: `SUPER,Print` → `frame region`, `SUPER+SHIFT,Print` → `frame full`, `SUPER+ALT,Print` → `frame window`. `~/.local/bin/frame` is a **symlink** to `target/release/frame`, so a release rebuild takes effect on the next keypress — and **`cargo clean` breaks the author's screenshot keybindings.** The symptom is a dead key with no error and no obvious cause. `cargo clean` on the debug profile alone is safe; wiping `target/` is not. Bindings live in `~/.config/mango/config.conf`, outside this repo, alongside the `windowrule`.
+- **`frame` is live, and `target/release` is load-bearing.** Since the cutover on 2026-07-21, the author's screenshot keys run this repo: `SUPER,Print` → `frame region`, `SUPER+SHIFT,Print` → `frame full`, `SUPER+ALT,Print` → `frame window`, `SUPER+CTRL,Print` → `frame scroll` (a toggle: press to start, press again to stop). `~/.local/bin/frame` is a **symlink** to `target/release/frame`, so a release rebuild takes effect on the next keypress — and **`cargo clean` breaks the author's screenshot keybindings.** The symptom is a dead key with no error and no obvious cause. `cargo clean` on the debug profile alone is safe; wiping `target/` is not. Bindings live in `~/.config/mango/config.conf`, outside this repo, alongside the `windowrule`.
 
 ## Anti-patterns
 

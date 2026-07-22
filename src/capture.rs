@@ -238,6 +238,128 @@ pub fn capture_output(target: Option<&str>) -> Result<(RgbaImage, i32), String> 
     Ok((img, scale))
 }
 
+/// A held-open capture connection, for grabbing many frames in a row.
+///
+/// `capture_output` above connects, does two roundtrips, grabs one frame and
+/// closes — right for a one-shot, fatal at 30 fps. A `Session` pays that setup
+/// once and then captures repeatedly.
+///
+/// It deliberately does **not** replace `capture_output`. That function sits
+/// behind three live keybindings; rewriting it on top of this would risk the
+/// working capture paths for tidiness. The two overlap only in setup
+/// sequencing — the dispatch impls and `buffer_to_rgba`, which is where the
+/// difficulty actually lives, are already shared.
+pub struct Session {
+    conn: Connection,
+    queue: wayland_client::EventQueue<CaptureApp>,
+    qh: QueueHandle<CaptureApp>,
+    app: CaptureApp,
+    manager: ZwlrScreencopyManagerV1,
+    output: wl_output::WlOutput,
+    shm: wl_shm::WlShm,
+}
+
+impl Session {
+    /// Open a connection and resolve the target output, exactly as
+    /// `capture_output` does, but keep everything for reuse.
+    pub fn open(target: Option<&str>) -> Result<Self, String> {
+        let conn =
+            Connection::connect_to_env().map_err(|e| format!("Wayland connect failed: {e}"))?;
+        let mut queue = conn.new_event_queue();
+        let qh = queue.handle();
+        conn.display().get_registry(&qh, ());
+
+        let mut app = CaptureApp::default();
+        // Two roundtrips: globals first, then each output's `name` and `scale`.
+        queue.roundtrip(&mut app).map_err(|e| e.to_string())?;
+        queue.roundtrip(&mut app).map_err(|e| e.to_string())?;
+
+        let manager = app
+            .screencopy
+            .clone()
+            .ok_or("compositor does not advertise zwlr_screencopy_manager_v1")?;
+        let shm = app.shm.clone().ok_or("no wl_shm")?;
+        // The caller already has the scale from its backdrop grab, so this does
+        // not carry a second copy of it.
+        let output = select_output(&app.outputs, target)?.proxy.clone();
+
+        Ok(Session {
+            conn,
+            queue,
+            qh,
+            app,
+            manager,
+            output,
+            shm,
+        })
+    }
+
+    /// Grab one region of the output. `x`, `y`, `w`, `h` are in the output's
+    /// **logical** coordinates — that is what `capture_output_region` takes,
+    /// and it is not the same space `overlay::select_region` returns.
+    pub fn capture_region(&mut self, x: i32, y: i32, w: i32, h: i32) -> Result<RgbaImage, String> {
+        // Each frame is a fresh handshake, so the per-capture scratch has to go
+        // back to its initial state or the previous frame's flags leak in.
+        self.app.pending_buffer = None;
+        self.app.buffer_done = false;
+        self.app.frame_ready = false;
+        self.app.frame_failed = false;
+        self.app.y_invert = false;
+
+        let frame = self
+            .manager
+            .capture_output_region(0, &self.output, x, y, w, h, &self.qh, ());
+
+        while !self.app.buffer_done && !self.app.frame_failed {
+            self.queue
+                .blocking_dispatch(&mut self.app)
+                .map_err(|e| e.to_string())?;
+        }
+        if self.app.frame_failed {
+            return Err("compositor sent `failed` before buffer_done".into());
+        }
+        let spec = self.app.pending_buffer.ok_or("no shm buffer offer")?;
+
+        // A fresh memfd per frame. The spike did the same and still held 30 fps;
+        // SPIKE-FINDINGS notes buffer reuse as available headroom, explicitly
+        // not needed for v1.
+        let size = (spec.stride * spec.height) as usize;
+        let fd = memfd_create("frame-scroll", MemfdFlags::empty()).map_err(|e| e.to_string())?;
+        ftruncate(&fd, size as u64).map_err(|e| e.to_string())?;
+        let file = File::from(fd);
+        let mut mmap = unsafe { MmapMut::map_mut(&file).map_err(|e| e.to_string())? };
+
+        let pool = self.shm.create_pool(file.as_fd(), size as i32, &self.qh, ());
+        let buffer = pool.create_buffer(
+            0,
+            spec.width as i32,
+            spec.height as i32,
+            spec.stride as i32,
+            spec.format,
+            &self.qh,
+            (),
+        );
+
+        frame.copy(&buffer);
+        while !self.app.frame_ready && !self.app.frame_failed {
+            self.queue
+                .blocking_dispatch(&mut self.app)
+                .map_err(|e| e.to_string())?;
+        }
+        if self.app.frame_failed {
+            return Err("compositor sent `failed` during copy".into());
+        }
+
+        let img = buffer_to_rgba(&mut mmap, spec, self.app.y_invert);
+        buffer.destroy();
+        pool.destroy();
+        frame.destroy();
+        self.conn.flush().ok();
+
+        Ok(img)
+    }
+}
+
 /// Choose which output to grab: the one whose connector name matches `target`,
 /// else the first the compositor advertised. A missing target or an unknown
 /// name both fall back rather than fail — single-display capture never hinges
