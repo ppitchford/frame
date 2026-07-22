@@ -82,7 +82,7 @@ Do not, without an explicit request from the author:
 
 ## Skills
 
-- **`plan-first`:** use at the start of every new feature, bug fix, refactor, or implementation request. Produces an approved `TODO.md` before any code is written. Do not skip the plan-first phase for implementation work.
+- **`plan-first`:** a user-level skill (`~/.claude/skills/plan-first/`), deliberately not checked into this repo — a second copy lived here until 2026-07-22 and had already drifted out of agreement with the first. Use it for substantial work: a new feature, a refactor touching multiple files, a non-trivial bug fix, a new module, or anything needing more than three sequential changes. It produces an approved `TODO.md` before any code is written, and that phase is not optional for implementation work. It is **not** for typo fixes, single-line edits, renames, read-only analysis, or one-shot answers.
 
 ## Required Reading
 
