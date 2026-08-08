@@ -73,17 +73,15 @@ Do not, without an explicit request from the author:
 - Optimise before a spike or first implementation has demonstrated a real problem.
 - Introduce abstractions speculatively. Concrete first; generalise only when a second concrete use case appears.
 - Propose swapping any crate in the Locked Dependencies list without a demonstrated, concrete problem. If a locked dependency turns out to be wrong, surface the evidence and ask — do not silently reach for an alternative.
-- Run `cargo clean`, or suggest it to reclaim disk space. `target/release/frame` is symlinked onto the author's live screenshot keybindings — see Environment. Deleting it breaks them silently.
-
-## Git
-
-- Freeform commit messages, imperative mood ("Add scroll capture stub", not "Added" or "Adds").
-- Subject line under ~72 characters. Body only when the "why" isn't obvious from the diff.
-- No prefix conventions. If the repo ever opens to contributors, reconsider then.
+- Run `cargo clean`, or suggest it to reclaim disk space. `target/release/frame` is symlinked onto the author's live screenshot keybindings — see Environment. Deleting it breaks them silently. A `PreToolUse` hook (`.claude/hooks/guard-cargo-clean.sh`) blocks the command, but not the suggestion — this line covers the latter.
 
 ## Skills
 
-- **`plan-first`:** a user-level skill (`~/.claude/skills/plan-first/`), deliberately not checked into this repo — a second copy lived here until 2026-07-22 and had already drifted out of agreement with the first. Use it for substantial work: a new feature, a refactor touching multiple files, a non-trivial bug fix, a new module, or anything needing more than three sequential changes. It produces an approved `TODO.md` before any code is written, and that phase is not optional for implementation work. It is **not** for typo fixes, single-line edits, renames, read-only analysis, or one-shot answers.
+- `plan-first` lives at `~/.claude/skills/plan-first/` and is deliberately not checked in here. A second copy lived in this repo until 2026-07-22 and had already drifted out of agreement with the first. Usage rules are in the user-level `CLAUDE.md`.
+
+## Naming
+
+- Geir Isene's `frame` (github.com/isene/frame) is an x86_64 assembly X server, unrelated to this project. When researching prior art, confirm which `frame` a source means.
 
 ## Required Reading
 
