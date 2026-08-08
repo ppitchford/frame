@@ -1,1 +1,5 @@
 /target
+
+# Claude Code: local state stays out; settings.json and hooks/ are committed.
+/.claude/settings.local.json
+/.claude/worktrees/
