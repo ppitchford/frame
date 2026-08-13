@@ -44,7 +44,8 @@ fn encode_png(img: &RgbaImage) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
-/// `$XDG_PICTURES_DIR/frame-<timestamp>.png`, falling back to `~/Pictures`.
+/// `$XDG_PICTURES_DIR/screenshot/frame-<timestamp>.png`, falling back to
+/// `~/Pictures/screenshot`.
 fn output_path() -> PathBuf {
     let dir = std::env::var_os("XDG_PICTURES_DIR")
         .map(PathBuf::from)
@@ -53,7 +54,7 @@ fn output_path() -> PathBuf {
             PathBuf::from(home).join("Pictures")
         });
     let ts = jiff::Zoned::now().strftime("%Y-%m-%d-%H%M%S").to_string();
-    dir.join(format!("frame-{ts}.png"))
+    dir.join("screenshot").join(format!("frame-{ts}.png"))
 }
 
 /// Hand the PNG to a detached helper that outlives this process.
