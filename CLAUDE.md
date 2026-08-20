@@ -18,6 +18,13 @@ Working agreement for Claude when contributing to `frame`.
 - **Consistency:** catch redundancies and inconsistencies in any config or code proactively. Don't wait to be asked.
 - **Learning context:** this is the author's first Rust project. Explain unfamiliar idioms, crate choices, and language mechanics as they arise; don't just hand over code. Teaching alongside implementation is in scope, not a digression from it.
 
+## Learning (Rust)
+
+Building `frame` *is* the Rust curriculum — there is no separate study track for it. Reach for these only when a concept needs grounding, not as a syllabus:
+
+- [YARR — Yet Another Rust Resource](https://yarr.fyi/) — crash course aimed at experienced engineers new to low-level work.
+- [The Rust Book](https://doc.rust-lang.org/book/) and [Rustlings](https://github.com/rust-lang/rustlings) — canonical reference and exercises, for ownership and lifetimes in particular.
+
 ## Code Style
 
 - Clarity over cleverness.
