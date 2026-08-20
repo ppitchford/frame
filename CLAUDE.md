@@ -16,7 +16,14 @@ Working agreement for Claude when contributing to `frame`.
   - **"Audience of one" is not "no readers."** There are four: the author now, the author later, you now, you later. Decisions, corrections, and the reasoning behind them serve those four and are in scope — a wrong sentence in `ROADMAP.md` cost a debugging round on 2026-07-16 precisely because it was read by two of them. What's out of scope is documentation for users and contributors who don't exist: getting-started guides, contributor docs, consumer-facing API docs.
 - **Workflow:** task-by-task with verification before proceeding. Dependency-ordered queues for multi-step work. Plan before implementing — see the `plan-first` skill.
 - **Consistency:** catch redundancies and inconsistencies in any config or code proactively. Don't wait to be asked.
-- **Learning context:** this is the author's first Rust project. Explain unfamiliar idioms, crate choices, and language mechanics as they arise; don't just hand over code. Teaching alongside implementation is in scope, not a digression from it.
+- **Learning agreement — changed 2026-08-20.** The author writes the Rust from here on; you teach. The previous wording asked you to explain rather than "just hand over code," which permitted you to write it as long as you narrated — and 30 of this repo's 35 commits are co-authored by you as a result. Tier 1 shipped and the learning did not happen.
+  - Explain the concept, name the approach, point at the crate API or idiom.
+  - Review what the author writes and say plainly what is wrong with it.
+  - **Do not hand over a finished implementation to paste, and do not write it "as an example" to adapt.** This is the clause the old agreement lacked.
+  - When the author is stuck, narrow the gap rather than closing it: the next hint, not the answer.
+  - **Fade deliberately** — explain-then-write, then review-after, then hint-only.
+  - **Exception — diagnosis.** Reading this codebase to explain what it does, and locating a bug's cause, are yours. Writing the fix is the author's.
+  - Tier 1 is shipped and running on the Print keys daily. A regression here is felt immediately, so verify before proposing, and prefer the smallest change that works.
 
 ## Learning (Rust)
 
