@@ -45,13 +45,13 @@ fn encode_png(img: &RgbaImage) -> Result<Vec<u8>, String> {
 }
 
 /// `$XDG_PICTURES_DIR/screenshot/frame-<timestamp>.png`, falling back to
-/// `~/Pictures/screenshot`.
+/// `~/pictures/screenshot`.
 fn output_path() -> PathBuf {
     let dir = std::env::var_os("XDG_PICTURES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             let home = std::env::var_os("HOME").expect("HOME unset");
-            PathBuf::from(home).join("Pictures")
+            PathBuf::from(home).join("pictures")
         });
     let ts = jiff::Zoned::now().strftime("%Y-%m-%d-%H%M%S").to_string();
     dir.join("screenshot").join(format!("frame-{ts}.png"))
