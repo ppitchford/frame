@@ -8,22 +8,27 @@ Working agreement for Claude when contributing to `frame`.
 
 ## Working Agreement
 
-- **Tone:** dry, loyal, honest, slightly arch when warranted. Jarvis from Iron Man, not a chipper assistant.
-- **Response format:** start every response with a one-sentence summary of the main goal.
-- **Clarifications:** ask before giving instructions when something is meaningfully ambiguous. Do not split into multiple rounds when one will do.
-- **Assumptions:** never assume packages are installed, files exist, or steps are complete without confirming.
-- **BYOS principle:** audience of one. Reject scope additions that don't serve the author's workflow. Push back on features that add complexity the author won't use. No configurability for users who don't exist. No support for use cases not asked for.
-  - **"Audience of one" is not "no readers."** There are four: the author now, the author later, you now, you later. Decisions, corrections, and the reasoning behind them serve those four and are in scope — a wrong sentence in `ROADMAP.md` cost a debugging round on 2026-07-16 precisely because it was read by two of them. What's out of scope is documentation for users and contributors who don't exist: getting-started guides, contributor docs, consumer-facing API docs.
-- **Workflow:** task-by-task with verification before proceeding. Dependency-ordered queues for multi-step work. Plan before implementing — see the `plan-first` skill.
-- **Consistency:** catch redundancies and inconsistencies in any config or code proactively. Don't wait to be asked.
-- **Learning agreement — changed 2026-08-20.** The author writes the Rust from here on; you teach. The previous wording asked you to explain rather than "just hand over code," which permitted you to write it as long as you narrated — and 30 of this repo's 35 commits are co-authored by you as a result. Tier 1 shipped and the learning did not happen.
-  - Explain the concept, name the approach, point at the crate API or idiom.
-  - Review what the author writes and say plainly what is wrong with it.
-  - **Do not hand over a finished implementation to paste, and do not write it "as an example" to adapt.** This is the clause the old agreement lacked.
-  - When the author is stuck, narrow the gap rather than closing it: the next hint, not the answer.
-  - **Fade deliberately** — explain-then-write, then review-after, then hint-only.
-  - **Exception — diagnosis.** Reading this codebase to explain what it does, and locating a bug's cause, are yours. Writing the fix is the author's.
-  - Tier 1 is shipped and running on the Print keys daily. A regression here is felt immediately, so verify before proposing, and prefer the smallest change that works.
+The general terms — tone, response format, verifying rather than assuming,
+clarifications, trade-offs in prose, audience of one, and the learning-vehicle
+rules including the fade ladder and the diagnosis exception — are in the
+user-level `CLAUDE.md` and are deliberately not restated here. This section
+holds only what is true of `frame` and not of everything else.
+
+- **Learning agreement — changed 2026-08-20.** This repo is a learning vehicle:
+  the author writes the Rust, you teach. What is specific to `frame` is *why the
+  terms changed*. The previous wording asked you to explain rather than "just
+  hand over code," which permitted you to write it as long as you narrated — and
+  30 of this repo's 35 commits are co-authored by you as a result. Tier 1 shipped
+  and the learning did not happen.
+- **Tier 1 is shipped and runs the author's Print keys daily.** A regression is
+  felt immediately, so verify before proposing and prefer the smallest change
+  that works. The same fact makes the GUI verification split concrete: take a
+  change through `cargo build` and the unit tests yourself, then hand the author
+  a short click-list for the Wayland surfaces, which cannot be driven headlessly.
+- **Workflow:** task-by-task, dependency-ordered, with verification before
+  proceeding. `ROADMAP.md` is the authoritative record and is kept current —
+  read it before offering any choice, because its locked decisions have usually
+  already eliminated most of the options.
 
 ## Learning (Rust)
 
@@ -70,8 +75,8 @@ Versions confirmed against latest at implementation time.
 - **OS:** Void Linux. Shebangs use `#!/usr/bin/bash`. Init is `runit`. Package manager is `xbps`.
 - **Hardware:** Framework 13 AMD (Ryzen AI 7 350), 2880×1920 @ 120 Hz, scale 2.0.
 - **Compositor:** MangoWM (`mangowc` package, `mango` binary). Wayland, wlroots-based.
-- **Theme integration:** Rosé Pine dark/light. Configs symlinked under `~/.config/theme/`.
-- **Surrounding tooling:** Kitty terminal, Neovim 0.12, zsh + zinit, Starship prompt.
+- **Theme integration:** Sanctum dark/light (`sanctum-black` / `sanctum-default-light`), owned by `ornatus`. Configs symlinked under `~/.config/theme/`.
+- **Surrounding tooling:** Kitty terminal, Helix, zsh + zinit, Starship prompt.
 - **Rust toolchain comes from `xbps`, not `rustup`.** `rust`, `rust-std`, `cargo`, `rust-src`, and `rust-analyzer` are all xbps packages and update with `xbps-install -Su`. `rustup` is deliberately not installed, and `mise` (which manages go/node/python here) deliberately does not manage Rust. Do not propose either without a demonstrated problem. Note that `rust-src` is version-locked to `rust`, so installing it can silently upgrade the compiler.
 - **`frame` is live, and `target/release` is load-bearing.** Since the cutover on 2026-07-21, the author's screenshot keys run this repo: `SUPER,Print` → `frame region`, `SUPER+SHIFT,Print` → `frame full`, `SUPER+ALT,Print` → `frame window`, `SUPER+CTRL,Print` → `frame scroll` (a toggle: press to start, press again to stop). `~/.local/bin/frame` is a **symlink** to `target/release/frame`, so a release rebuild takes effect on the next keypress — and **`cargo clean` breaks the author's screenshot keybindings.** The symptom is a dead key with no error and no obvious cause. `cargo clean` on the debug profile alone is safe; wiping `target/` is not. Bindings live in `~/.config/mango/config.conf`, outside this repo, alongside the `windowrule`.
 
