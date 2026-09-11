@@ -1,5 +1,5 @@
 // Screen capture via wlr-screencopy. Carried over from the scrolling-capture
-// spike (see git history + SPIKE-FINDINGS.md), now a real module: a
+// spike (see git history + spike-findings.md), now a real module: a
 // self-contained full-output grab used as the frozen backdrop for selection.
 
 use std::fs::File;
@@ -321,7 +321,7 @@ impl Session {
         let spec = self.app.pending_buffer.ok_or("no shm buffer offer")?;
 
         // A fresh memfd per frame. The spike did the same and still held 30 fps;
-        // SPIKE-FINDINGS notes buffer reuse as available headroom, explicitly
+        // spike-findings notes buffer reuse as available headroom, explicitly
         // not needed for v1.
         let size = (spec.stride * spec.height) as usize;
         let fd = memfd_create("frame-scroll", MemfdFlags::empty()).map_err(|e| e.to_string())?;

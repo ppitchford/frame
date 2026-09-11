@@ -2,7 +2,7 @@
 // and fold each one into a growing image as it arrives.
 //
 // The algorithm and every constant here come from the feasibility spike
-// (`a6762c1`, written up in SPIKE-FINDINGS.md), which proved the approach and
+// (`a6762c1`, written up in spike-findings.md), which proved the approach and
 // then took a naive 9454 ms stitch down to 1589 ms. They are carried over
 // unchanged and are not to be re-derived.
 //
